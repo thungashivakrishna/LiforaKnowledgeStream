@@ -176,6 +176,8 @@ services:
       - TEMPORAL_PORT=7233
       - NEO4J_HOST=neo4j
       - NEO4J_BOLT_PORT=7687
+    volumes:
+      - ../..:/app
     depends_on:
       postgres:
         condition: service_healthy

@@ -58,6 +58,9 @@ class EnrichmentActivities:
         text = payload["text"]
         model = payload.get("model", "gpt-3.5-turbo")
         
+        # Truncate text to avoid overloading prompt context
+        truncated_text = text[:25000]
+        
         # Truncate text if it's exceptionally long for Phase 1 context window constraints
         # Real implementation would chunk or map-reduce this
         source_type = payload.get("source_type", "GENERAL_HEALTH")
