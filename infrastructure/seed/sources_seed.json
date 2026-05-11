@@ -1,0 +1,326 @@
+[
+  {
+    "name": "PubMed Central",
+    "root_url": "https://www.ncbi.nlm.nih.gov/pmc/",
+    "source_type": "academic_source",
+    "primary_framework": "evidence_based_western_medicine",
+    "secondary_frameworks": ["nutrition_science"],
+    "trust_tier": 1,
+    "approval_status": "approved_active",
+    "language": "en",
+    "region": "US",
+    "crawl_policy": {
+      "depth": 2,
+      "allow_patterns": ["/articles/"],
+      "block_patterns": ["/tools/", "/about/", "/help/"],
+      "robots_respect": true
+    },
+    "freshness_days": 14
+  },
+  {
+    "name": "MedlinePlus (NIH)",
+    "root_url": "https://medlineplus.gov",
+    "source_type": "public_health_source",
+    "primary_framework": "evidence_based_western_medicine",
+    "secondary_frameworks": [],
+    "trust_tier": 1,
+    "approval_status": "approved_active",
+    "language": "en",
+    "region": "US",
+    "crawl_policy": {
+      "depth": 2,
+      "allow_patterns": ["/ency/", "/health-topics/"],
+      "block_patterns": ["/connect/", "/about/"],
+      "robots_respect": true
+    },
+    "freshness_days": 30
+  },
+  {
+    "name": "CDC — Health Topics",
+    "root_url": "https://www.cdc.gov",
+    "source_type": "public_health_source",
+    "primary_framework": "evidence_based_western_medicine",
+    "secondary_frameworks": [],
+    "trust_tier": 1,
+    "approval_status": "approved_active",
+    "language": "en",
+    "region": "US",
+    "crawl_policy": {
+      "depth": 2,
+      "allow_patterns": ["/health/"],
+      "block_patterns": ["/about/", "/careers/", "/media/"],
+      "robots_respect": true
+    },
+    "freshness_days": 30
+  },
+  {
+    "name": "WHO — Health Topics",
+    "root_url": "https://www.who.int/health-topics",
+    "source_type": "public_health_source",
+    "primary_framework": "evidence_based_western_medicine",
+    "secondary_frameworks": [],
+    "trust_tier": 1,
+    "approval_status": "approved_active",
+    "language": "en",
+    "region": "global",
+    "crawl_policy": {
+      "depth": 2,
+      "allow_patterns": ["/health-topics/", "/news-room/fact-sheets/"],
+      "block_patterns": ["/about/", "/careers/"],
+      "robots_respect": true
+    },
+    "freshness_days": 30
+  },
+  {
+    "name": "NICE Guidelines (UK)",
+    "root_url": "https://www.nice.org.uk/guidance",
+    "source_type": "guideline_source",
+    "primary_framework": "evidence_based_western_medicine",
+    "secondary_frameworks": [],
+    "trust_tier": 1,
+    "approval_status": "approved_active",
+    "language": "en",
+    "region": "UK",
+    "crawl_policy": {
+      "depth": 2,
+      "allow_patterns": ["/guidance/"],
+      "block_patterns": ["/about/", "/get-involved/"],
+      "robots_respect": true
+    },
+    "freshness_days": 60
+  },
+  {
+    "name": "Mayo Clinic — Diseases & Conditions",
+    "root_url": "https://www.mayoclinic.org/diseases-conditions",
+    "source_type": "hospital_education_source",
+    "primary_framework": "evidence_based_western_medicine",
+    "secondary_frameworks": ["nutrition_science"],
+    "trust_tier": 2,
+    "approval_status": "approved_active",
+    "language": "en",
+    "region": "US",
+    "crawl_policy": {
+      "depth": 2,
+      "allow_patterns": ["/diseases-conditions/", "/healthy-lifestyle/"],
+      "block_patterns": ["/appointments/", "/patient-care/"],
+      "robots_respect": true
+    },
+    "freshness_days": 60
+  },
+  {
+    "name": "NHS — Health A to Z",
+    "root_url": "https://www.nhs.uk/conditions",
+    "source_type": "hospital_education_source",
+    "primary_framework": "evidence_based_western_medicine",
+    "secondary_frameworks": [],
+    "trust_tier": 2,
+    "approval_status": "approved_active",
+    "language": "en",
+    "region": "UK",
+    "crawl_policy": {
+      "depth": 2,
+      "allow_patterns": ["/conditions/", "/live-well/"],
+      "block_patterns": ["/nhs-services/", "/about-us/"],
+      "robots_respect": true
+    },
+    "freshness_days": 60
+  },
+  {
+    "name": "Harvard Nutrition Source",
+    "root_url": "https://www.hsph.harvard.edu/nutritionsource",
+    "source_type": "nutrition_guidance_source",
+    "primary_framework": "nutrition_science",
+    "secondary_frameworks": ["evidence_based_western_medicine"],
+    "trust_tier": 1,
+    "approval_status": "approved_active",
+    "language": "en",
+    "region": "US",
+    "crawl_policy": {
+      "depth": 2,
+      "allow_patterns": ["/nutritionsource/"],
+      "block_patterns": ["/news/", "/about/"],
+      "robots_respect": true
+    },
+    "freshness_days": 30
+  },
+  {
+    "name": "NIH Office of Dietary Supplements",
+    "root_url": "https://ods.od.nih.gov",
+    "source_type": "public_health_source",
+    "primary_framework": "nutrition_science",
+    "secondary_frameworks": ["evidence_based_western_medicine"],
+    "trust_tier": 1,
+    "approval_status": "approved_active",
+    "language": "en",
+    "region": "US",
+    "crawl_policy": {
+      "depth": 2,
+      "allow_patterns": ["/factsheets/", "/Health_Information/"],
+      "block_patterns": ["/About/", "/Research/"],
+      "robots_respect": true
+    },
+    "freshness_days": 60
+  },
+  {
+    "name": "USDA FoodData Central",
+    "root_url": "https://fdc.nal.usda.gov",
+    "source_type": "dataset_or_api_source",
+    "primary_framework": "nutrition_science",
+    "secondary_frameworks": [],
+    "trust_tier": 1,
+    "approval_status": "approved_active",
+    "language": "en",
+    "region": "US",
+    "crawl_policy": {
+      "depth": 1,
+      "allow_patterns": ["/food-details/"],
+      "block_patterns": [],
+      "robots_respect": true
+    },
+    "freshness_days": 90
+  },
+  {
+    "name": "EFSA — European Food Safety Authority",
+    "root_url": "https://www.efsa.europa.eu/en/topics",
+    "source_type": "guideline_source",
+    "primary_framework": "nutrition_science",
+    "secondary_frameworks": ["evidence_based_western_medicine"],
+    "trust_tier": 1,
+    "approval_status": "approved_active",
+    "language": "en",
+    "region": "EU",
+    "crawl_policy": {
+      "depth": 2,
+      "allow_patterns": ["/en/topics/", "/en/efsajournal/"],
+      "block_patterns": ["/en/about/", "/en/careers/"],
+      "robots_respect": true
+    },
+    "freshness_days": 60
+  },
+  {
+    "name": "British Nutrition Foundation",
+    "root_url": "https://www.nutrition.org.uk",
+    "source_type": "nutrition_guidance_source",
+    "primary_framework": "nutrition_science",
+    "secondary_frameworks": [],
+    "trust_tier": 2,
+    "approval_status": "approved_active",
+    "language": "en",
+    "region": "UK",
+    "crawl_policy": {
+      "depth": 2,
+      "allow_patterns": ["/healthy-sustainable-diets/", "/health-conditions/"],
+      "block_patterns": ["/about/", "/news/"],
+      "robots_respect": true
+    },
+    "freshness_days": 60
+  },
+  {
+    "name": "Academy of Nutrition and Dietetics",
+    "root_url": "https://www.eatright.org",
+    "source_type": "nutrition_guidance_source",
+    "primary_framework": "nutrition_science",
+    "secondary_frameworks": ["lifestyle_behavioral_health"],
+    "trust_tier": 2,
+    "approval_status": "approved_active",
+    "language": "en",
+    "region": "US",
+    "crawl_policy": {
+      "depth": 2,
+      "allow_patterns": ["/health-living/", "/food/"],
+      "block_patterns": ["/membership/", "/career/"],
+      "robots_respect": true
+    },
+    "freshness_days": 60
+  },
+  {
+    "name": "Examine.com",
+    "root_url": "https://examine.com",
+    "source_type": "academic_source",
+    "primary_framework": "nutrition_science",
+    "secondary_frameworks": ["evidence_based_western_medicine", "physical_activity_science"],
+    "trust_tier": 2,
+    "approval_status": "approved_active",
+    "language": "en",
+    "region": "global",
+    "crawl_policy": {
+      "depth": 2,
+      "allow_patterns": ["/supplements/", "/conditions/", "/foods/"],
+      "block_patterns": ["/members/", "/pricing/"],
+      "robots_respect": true
+    },
+    "freshness_days": 30
+  },
+  {
+    "name": "USPSTF — Preventive Services",
+    "root_url": "https://www.uspreventiveservicestaskforce.org/uspstf/recommendation-topics",
+    "source_type": "guideline_source",
+    "primary_framework": "PREVENTIVE_MEDICINE",
+    "secondary_frameworks": ["evidence_based_western_medicine"],
+    "trust_tier": 1,
+    "approval_status": "approved_active",
+    "language": "en",
+    "region": "US",
+    "crawl_policy": {
+      "depth": 2,
+      "allow_patterns": ["/recommendation/"],
+      "block_patterns": ["/about/", "/contact/"],
+      "robots_respect": true
+    },
+    "freshness_days": 90
+  },
+  {
+    "name": "CDC — Prevention & Screenings",
+    "root_url": "https://www.cdc.gov/prevention/index.html",
+    "source_type": "public_health_source",
+    "primary_framework": "PREVENTIVE_MEDICINE",
+    "secondary_frameworks": ["lifestyle_behavioral_health"],
+    "trust_tier": 1,
+    "approval_status": "approved_active",
+    "language": "en",
+    "region": "US",
+    "crawl_policy": {
+      "depth": 2,
+      "allow_patterns": ["/prevention/"],
+      "block_patterns": [],
+      "robots_respect": true
+    },
+    "freshness_days": 60
+  },
+  {
+    "name": "DailyMed (NLM) — Drug Labels",
+    "root_url": "https://dailymed.nlm.nih.gov/dailymed/",
+    "source_type": "PRESCRIPTION_SOURCE",
+    "primary_framework": "evidence_based_western_medicine",
+    "secondary_frameworks": [],
+    "trust_tier": 1,
+    "approval_status": "approved_active",
+    "language": "en",
+    "region": "US",
+    "crawl_policy": {
+      "depth": 1,
+      "allow_patterns": ["/drugInfo.cfm"],
+      "block_patterns": [],
+      "robots_respect": true
+    },
+    "freshness_days": 30
+  },
+  {
+    "name": "Medscape — Clinical Reference",
+    "root_url": "https://reference.medscape.com",
+    "source_type": "CLINICAL_REPORT_SOURCE",
+    "primary_framework": "evidence_based_western_medicine",
+    "secondary_frameworks": ["PREVENTIVE_MEDICINE"],
+    "trust_tier": 1,
+    "approval_status": "approved_active",
+    "language": "en",
+    "region": "global",
+    "crawl_policy": {
+      "depth": 2,
+      "allow_patterns": ["/article/", "/viewarticle/"],
+      "block_patterns": ["/news/"],
+      "robots_respect": true
+    },
+    "freshness_days": 30
+  }
+]

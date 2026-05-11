@@ -1,0 +1,34 @@
+[
+  {
+    "name": "Generic Health Discovery",
+    "mode": "GENERIC",
+    "topics": ["preventive_care", "clinical_guidelines", "general_health"],
+    "max_candidates": 200,
+    "per_source_limit": 20,
+    "frameworks": ["EVIDENCE_BASED_WESTERN_MEDICINE"]
+  },
+  {
+    "name": "Focused Nutrition & Metabolic",
+    "mode": "FOCUSED",
+    "topics": ["metabolic", "dietary_patterns", "gut_health", "macronutrients"],
+    "max_candidates": 100,
+    "per_source_limit": 25,
+    "frameworks": ["NUTRITION_SCIENCE", "EVIDENCE_BASED_WESTERN_MEDICINE"]
+  },
+  {
+    "name": "Academic Research Deep Dive",
+    "mode": "HYBRID",
+    "topics": ["clinical_nutrition", "exercise_physiology", "immunology", "pharmacology"],
+    "max_candidates": 300,
+    "per_source_limit": 50,
+    "frameworks": ["EVIDENCE_BASED_WESTERN_MEDICINE", "NUTRITION_SCIENCE", "PHYSICAL_ACTIVITY_SCIENCE"]
+  },
+  {
+    "name": "Preventive Medicine Protocols",
+    "mode": "FOCUSED",
+    "topics": ["screening_guidelines", "vaccination_schedules", "chronic_disease_prevention", "early_detection"],
+    "max_candidates": 150,
+    "per_source_limit": 30,
+    "frameworks": ["PREVENTIVE_MEDICINE", "EVIDENCE_BASED_WESTERN_MEDICINE"]
+  }
+]

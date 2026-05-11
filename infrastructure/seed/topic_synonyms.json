@@ -1,0 +1,18 @@
+{
+  "cardiovascular": ["heart disease", "coronary artery", "hypertension", "blood pressure", "heart failure", "stroke", "arrhythmia"],
+  "metabolic": ["diabetes", "insulin resistance", "blood sugar", "glucose", "metabolic syndrome", "obesity", "type 2 diabetes"],
+  "inflammatory": ["inflammation", "autoimmune", "arthritis", "cytokines", "oxidative stress", "chronic inflammation"],
+  "oncology": ["cancer", "tumour", "tumor", "carcinoma", "malignancy", "chemotherapy", "oncology"],
+  "preventive_care": ["prevention", "screening", "vaccination", "health check", "risk reduction", "public health"],
+  "macronutrients": ["protein", "carbohydrate", "fat", "calories", "energy intake", "macros", "fibre", "fiber"],
+  "micronutrients": ["vitamins", "minerals", "iron", "zinc", "magnesium", "calcium", "vitamin D", "vitamin B12", "folate"],
+  "dietary_patterns": ["mediterranean diet", "whole food", "plant-based", "low carb", "DASH diet", "keto", "intermittent fasting"],
+  "food_behaviour": ["eating habits", "appetite", "satiety", "food cravings", "emotional eating", "portion size"],
+  "supplementation": ["supplements", "omega-3", "probiotics", "creatine", "multivitamin", "fish oil"],
+  "gut_health": ["microbiome", "gut bacteria", "prebiotics", "probiotics", "digestive health", "IBS"],
+  "strength_training": ["resistance training", "weight lifting", "hypertrophy", "muscle mass", "strength"],
+  "cardiovascular_exercise": ["cardio", "aerobic exercise", "running", "cycling", "VO2 max", "endurance"],
+  "sleep": ["sleep quality", "insomnia", "circadian rhythm", "sleep deprivation", "REM sleep"],
+  "stress_management": ["stress", "cortisol", "anxiety", "relaxation", "mindfulness", "burnout"],
+  "habit_formation": ["habit", "behaviour change", "motivation", "adherence", "goal setting", "routine"]
+}

@@ -1,0 +1,44 @@
+{
+  "evidence_based_western_medicine": {
+    "label": "Evidence-based / Western Medicine",
+    "description": "Clinical, research-driven, diagnosis/prevention/guideline-based knowledge.",
+    "topics": [
+      "cardiovascular", "metabolic", "inflammatory", "oncology",
+      "preventive_care", "clinical_guidelines", "pharmacology",
+      "neurology", "immunology", "endocrinology"
+    ]
+  },
+  "nutrition_science": {
+    "label": "Nutrition Science",
+    "description": "Calories, macros, micronutrients, dietary patterns, food behavior, and evidence-based dietary guidance.",
+    "topics": [
+      "macronutrients", "micronutrients", "dietary_patterns",
+      "food_behaviour", "supplementation", "gut_health",
+      "sports_nutrition", "clinical_nutrition", "food_safety"
+    ]
+  },
+  "physical_activity_science": {
+    "label": "Physical Activity Science",
+    "description": "Strength, cardio, mobility, exercise physiology, recovery, and training methods.",
+    "topics": [
+      "strength_training", "cardiovascular_exercise", "mobility",
+      "recovery", "exercise_physiology", "sport_performance"
+    ]
+  },
+  "holistic_traditional_systems": {
+    "label": "Holistic / Traditional Systems",
+    "description": "Ayurveda, yoga, traditional dietary systems, seasonal and balance-based guidance.",
+    "topics": [
+      "ayurveda", "yoga", "traditional_medicine", "seasonal_living",
+      "mind_body", "herbal_medicine"
+    ]
+  },
+  "lifestyle_behavioral_health": {
+    "label": "Lifestyle & Behavioral Health",
+    "description": "Sleep, stress, habit formation, adherence, behavioral patterns, routine sustainability.",
+    "topics": [
+      "sleep", "stress_management", "habit_formation",
+      "adherence", "mental_health", "routine"
+    ]
+  }
+}

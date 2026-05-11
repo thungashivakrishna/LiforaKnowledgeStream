@@ -1,0 +1,220 @@
+version: "3.9"
+
+services:
+  # ── PostgreSQL ──────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: ks_postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-knowledge_stream}
+      POSTGRES_USER: ${POSTGRES_USER:-ks_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ks_password}
+    ports:
+      - "18432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-ks_user} -d ${POSTGRES_DB:-knowledge_stream}" ]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  # ── Qdrant (vector store) ────────────────────────────────────────────────────
+  qdrant:
+    image: qdrant/qdrant:v1.9.2
+    container_name: ks_qdrant
+    ports:
+      - "18333:6333" # HTTP API
+      - "18334:6334" # gRPC
+    volumes:
+      - qdrant_data:/qdrant/storage
+    restart: unless-stopped
+
+  # ── MinIO (object storage) ───────────────────────────────────────────────────
+  minio:
+    image: minio/minio:latest
+    container_name: ks_minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
+    ports:
+      - "18000:9000" # S3 API
+      - "18001:9001" # MinIO Console UI
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: [ "CMD", "curl", "-f", "http://localhost:9000/minio/health/live" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # ── Redis ────────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: ks_redis
+    ports:
+      - "18379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    
+  # ── Neo4j (graph database) ──────────────────────────────────────────────────
+  neo4j:
+    image: neo4j:5.19-community
+    container_name: ks_neo4j
+    ports:
+      - "17474:7474" # HTTP
+      - "17687:7687" # Bolt
+    environment:
+      - NEO4J_AUTH=${NEO4J_AUTH:-neo4j/ks_password}
+    volumes:
+      - neo4j_data:/data
+    restart: unless-stopped
+
+  # ── Temporal (workflow orchestration) ────────────────────────────────────────
+  temporal:
+    image: temporalio/auto-setup:1.23.0
+    container_name: ks_temporal
+    environment:
+      - DB=postgresql
+      - DB_PORT=5432
+      - POSTGRES_USER=${POSTGRES_USER:-ks_user}
+      - POSTGRES_PWD=${POSTGRES_PASSWORD:-ks_password}
+      - POSTGRES_SEEDS=postgres
+      - TEMPORAL_ADDRESS=temporal:7233
+    ports:
+      - "18233:7233"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Temporal UI ───────────────────────────────────────────────────────────────
+  temporal-ui:
+    image: temporalio/ui:2.26.2
+    container_name: ks_temporal_ui
+    environment:
+      - TEMPORAL_ADDRESS=temporal:7233
+      - TEMPORAL_CORS_ORIGINS=http://localhost:3000
+    ports:
+      - "18080:8080" # Temporal UI
+    depends_on:
+      - temporal
+    restart: unless-stopped
+
+  # ── API Service ──────────────────────────────────────────────────────────────
+  api:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    container_name: ks_api
+    env_file:
+      - ../../.env
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - MINIO_ENDPOINT=minio:9000
+      - TEMPORAL_HOST=temporal
+      - TEMPORAL_PORT=7233
+      - NEO4J_HOST=neo4j
+      - NEO4J_BOLT_PORT=7687
+      - NEO4J_USER=${NEO4J_USER:-neo4j}
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD:-ks_password}
+      - MODEL_PRIMARY=${MODEL_PRIMARY:-deepseek/deepseek-chat}
+      - MODEL_PRIMARY_API_KEY=${MODEL_PRIMARY_API_KEY}
+      - MODEL_SECONDARY=${MODEL_SECONDARY:-gemini/gemini-1.5-flash}
+      - MODEL_SECONDARY_API_KEY=${MODEL_SECONDARY_API_KEY}
+      - MODEL_TERTIARY=${MODEL_TERTIARY:-gpt-4o-mini}
+      - MODEL_TERTIARY_API_KEY=${MODEL_TERTIARY_API_KEY}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-text-embedding-3-small}
+      - EMBEDDING_API_KEY=${EMBEDDING_API_KEY}
+      - NEO4J_HOST=neo4j
+      - NEO4J_BOLT_PORT=7687
+      - NEO4J_USER=${NEO4J_USER:-neo4j}
+      - NEO4J_PASSWORD=${NEO4J_PASSWORD:-ks_password}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ../..:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # ── Worker Service ───────────────────────────────────────────────────────────
+  worker:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    # container_name: ks_worker
+    env_file:
+      - ../../.env
+    command: python -m apps.worker.main
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - MINIO_ENDPOINT=minio:9000
+      - TEMPORAL_HOST=temporal
+      - TEMPORAL_PORT=7233
+      - NEO4J_HOST=neo4j
+      - NEO4J_BOLT_PORT=7687
+    depends_on:
+      postgres:
+        condition: service_healthy
+      temporal:
+        condition: service_started
+    restart: unless-stopped
+
+  # ── Seed Service (One-shot) ─────────────────────────────────────────────────
+  seed:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    container_name: ks_seed
+    command: /bin/sh -c "alembic upgrade head && python infrastructure/scripts/seed_db.py"
+    environment:
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # ── PgAdmin (Database UI) ───────────────────────────────────────────────────
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: ks_pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@knowledge.stream
+      PGADMIN_DEFAULT_PASSWORD: admin
+      PGADMIN_CONFIG_SERVER_MODE: 'False'
+    ports:
+      - "5051:80"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  qdrant_data:
+  minio_data:
+  redis_data:
+  neo4j_data:

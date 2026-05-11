@@ -1,0 +1,282 @@
+import json
+import logging
+import uuid
+from datetime import datetime, timezone
+
+import httpx
+import xxhash
+import litellm
+from minio import Minio
+from sqlalchemy import select
+from temporalio import activity
+
+from apps.api.database import AsyncSessionFactory
+from ks.config.settings import get_settings
+from ks.domain.enums import DocumentStatus, RunStatus
+from ks.domain.models import DocumentRegistry, DocumentVersion, FetchRun
+from ks.acquisition.schemas import IntelligenceAuditOutput
+
+
+import io
+
+logger = logging.getLogger(__name__)
+
+
+class AcquisitionActivities:
+    def __init__(self, http_client: httpx.AsyncClient, minio_client: Minio):
+        self.http_client = http_client
+        self.minio_client = minio_client
+        self.settings = get_settings()
+
+    @activity.defn
+    async def audit_document_intelligence(self, payload: dict) -> dict:
+        """
+        Intelligence Layer: Evaluates document relevance and depth using LLM.
+        """
+        content = payload.get("content_text", "")
+        url = payload.get("url", "")
+        
+        # Use gpt-4o-mini for efficient auditing
+        model = "gpt-4o-mini"
+        api_key = self.settings.model.secondary_api_key
+        
+        prompt = f"""
+        You are a Health Intelligence Auditor. Analyze the content from {url} to determine if it's high-value medical knowledge.
+        
+        Criteria:
+        - HIGH VALUE: Detailed clinical guidelines, specific medication dosages (e.g., 500mg), nutrient stats, symptoms, or treatment protocols.
+        - LOW VALUE / INDEX: Lists of links, search results, directory pages, or shallow boilerplate.
+        
+        Task:
+        1. Decide if high_value (bool).
+        2. Provide reason (string).
+        3. If LOW VALUE but has promising links, list up to 5 absolute URLs to follow.
+        4. If HIGH VALUE, extract top 3 key facts as S-P-O triples (subject, predicate, object).
+        
+        Content (first 5000 chars):
+        {content[:5000]}
+        """
+        
+        try:
+            response = litellm.completion(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                response_format=IntelligenceAuditOutput,
+                api_key=api_key
+            )
+            
+            output = json.loads(response.choices[0].message.content)
+            return {"success": True, "audit": output}
+        except Exception as e:
+            logger.error(f"Intelligence audit failed: {e}")
+            # Fallback to high value if audit fails to be safe
+            return {"success": False, "audit": {"is_high_value": True, "reason": f"Audit error: {e}"}}
+
+    @activity.defn
+    async def fetch_content(self, payload: dict) -> dict:
+        """
+        Fetches the content of a document and returns the raw bytes + metadata.
+        Payload keys: document_id, url
+        """
+        doc_id = payload["document_id"]
+        url = payload["url"]
+        
+        logger.info(f"Fetching content for document {doc_id} from {url}")
+        
+        try:
+            resp = await self.http_client.get(url, follow_redirects=True)
+            resp.raise_for_status()
+            
+            content = resp.content
+            content_type = resp.headers.get("content-type", "application/octet-stream")
+            
+            # Content Quality Assessment (for HTML)
+            if "html" in content_type:
+                from bs4 import BeautifulSoup
+                soup = BeautifulSoup(content, "html.parser")
+                # Remove boilerplate for accurate word count
+                for tag in soup(["script", "style", "nav", "footer", "header"]):
+                    tag.extract()
+                
+                text = soup.get_text(separator=" ", strip=True)
+                words = text.split()
+                links = soup.find_all("a")
+                
+                # Criteria 1: Word count (Reject if < 100 words of actual content)
+                if len(words) < 100:
+                    logger.warning(f"Document {doc_id} rejected: Low word count ({len(words)})")
+                    return {"document_id": str(doc_id), "url": url, "success": False, "rejected": True, "error": "Low content volume (index page?)"}
+                
+                # Criteria 2: Link-to-Text ratio (Reject if > 50% of the text is inside links)
+                link_text_len = sum(len(a.get_text(strip=True)) for a in links)
+                if link_text_len / (len(text) + 1) > 0.5:
+                    logger.warning(f"Document {doc_id} rejected: High link-to-text ratio")
+                    return {"document_id": str(doc_id), "url": url, "success": False, "rejected": True, "error": "High link density (index page?)"}
+
+            # Diagnostic PDF Parsing & Vision Intake
+            elif "pdf" in content_type:
+                try:
+                    from pdfminer.high_level import extract_text
+                    import io
+                    pdf_file = io.BytesIO(content)
+                    text = extract_text(pdf_file)
+                    
+                    # If very little text is extracted, it might be a scanned PDF.
+                    # We can use OCR vision intake as fallback if needed.
+                    if len(text.strip()) < 50:
+                        logger.warning(f"Low text yield from PDF {doc_id}. Likely a scanned lab report.")
+                        text = "[SCANNED DIAGNOSTIC REPORT] - Vision Intake Required for full extraction.\n" + text
+                except Exception as e:
+                    logger.error(f"Failed to parse diagnostic PDF {doc_id}: {e}")
+                    text = ""
+                    
+            elif "image" in content_type:
+                # Vision Intake using Tesseract OCR for physical medical reports/prescriptions
+                try:
+                    import pytesseract
+                    from PIL import Image
+                    import io
+                    img = Image.open(io.BytesIO(content))
+                    text = pytesseract.image_to_string(img)
+                    logger.info(f"Successfully ran OCR Vision Intake on image {doc_id}")
+                except Exception as e:
+                    logger.error(f"Failed OCR on image {doc_id}: {e}")
+                    text = ""
+            else:
+                text = ""
+
+            # Content hashing
+            hasher = xxhash.xxh64()
+            hasher.update(content)
+            content_hash = hasher.hexdigest()
+            
+            return {
+                "document_id": str(doc_id),
+                "url": url,
+                "content_hash": content_hash,
+                "content_type": content_type,
+                "size_bytes": len(content),
+                "content": content,
+                "content_text": text if "html" in content_type else "",
+                "success": True
+            }
+        except Exception as e:
+            logger.error(f"Failed to fetch {url}: {e}")
+            return {
+                "document_id": str(doc_id),
+                "url": url,
+                "success": False,
+                "error": str(e)
+            }
+
+    @activity.defn
+    async def store_raw_artifact(self, payload: dict) -> str:
+        """
+        Stores the raw content in MinIO and returns the object key.
+        Payload keys: document_id, content_hash, content_type, content (bytes)
+        Note: Passing bytes directly in activity might be heavy, but for prototype it's okay.
+        """
+        doc_id = payload["document_id"]
+        content_hash = payload["content_hash"]
+        content_type = payload["content_type"]
+        content = payload["content"]
+        
+        # Temporal JSON converter might turn bytes into a list of ints
+        if isinstance(content, list):
+            content = bytes(content)
+        
+        # Object key naming: {doc_id}/{hash}.{ext}
+        ext = "html" if "html" in content_type else "pdf" if "pdf" in content_type else "bin"
+        object_key = f"{doc_id}/{content_hash}.{ext}"
+        
+        logger.info(f"Storing artifact in MinIO: {object_key}")
+        
+        # Ensure bucket exists
+        bucket = self.settings.minio.bucket_raw
+        if not self.minio_client.bucket_exists(bucket):
+            self.minio_client.make_bucket(bucket)
+            
+        # Upload
+        content_file = io.BytesIO(content)
+        self.minio_client.put_object(
+            bucket,
+            object_key,
+            content_file,
+            length=len(content),
+            content_type=content_type
+        )
+        
+        return object_key
+
+    @activity.defn
+    async def persist_audit_facts(self, payload: dict) -> None:
+        """
+        Intelligence Layer: Stores the initial facts captured during audit.
+        """
+        doc_id = uuid.UUID(payload["document_id"])
+        facts = payload.get("facts", [])
+        
+        async with AsyncSessionFactory() as session:
+            from ks.domain.models import KnowledgeFact
+            from ks.domain.enums import ValidationStatus
+            
+            for f in facts:
+                fact = KnowledgeFact(
+                    document_id=doc_id,
+                    fact_text=f.get("fact_text", ""),
+                    subject=f.get("subject"),
+                    predicate=f.get("predicate"),
+                    object_=f.get("object"),
+                    confidence=0.8, # Audit facts are initial indicators
+                    validation_status=ValidationStatus.PENDING
+                )
+                session.add(fact)
+            await session.commit()
+
+    @activity.defn
+    async def update_fetch_status(self, payload: dict) -> None:
+        """
+        Updates the database with the fetch result.
+        Payload keys: run_id, document_id, status, error_message, version_hash, object_key
+        """
+        run_id = uuid.UUID(payload["run_id"])
+        doc_id = uuid.UUID(payload["document_id"])
+        status = RunStatus(payload["status"])
+        error_msg = payload.get("error_message")
+        v_hash = payload.get("version_hash")
+        obj_key = payload.get("object_key")
+        
+        async with AsyncSessionFactory() as session:
+            # Update FetchRun
+            res = await session.execute(select(FetchRun).where(FetchRun.id == run_id))
+            run = res.scalar_one_or_none()
+            if run:
+                run.status = status
+                run.completed_at = datetime.now(timezone.utc)
+                run.error_message = error_msg
+
+            doc_result = await session.execute(
+                select(DocumentRegistry).where(DocumentRegistry.id == doc_id)
+            )
+            document = doc_result.scalar_one_or_none()
+
+            if status == RunStatus.COMPLETED and v_hash and obj_key:
+                version = DocumentVersion(
+                    id=uuid.uuid4(),
+                    document_id=doc_id,
+                    version_hash=v_hash,
+                    raw_object_key=obj_key,
+                    fetched_at=datetime.now(timezone.utc)
+                )
+                session.add(version)
+                if document:
+                    document.status = DocumentStatus.FETCHED
+                    document.content_hash = v_hash
+                    document.raw_object_key = obj_key
+            elif document:
+                if payload.get("rejected"):
+                    document.status = DocumentStatus.REJECTED
+                else:
+                    document.status = DocumentStatus.FAILED
+            
+            await session.commit()
