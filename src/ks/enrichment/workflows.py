@@ -51,62 +51,100 @@ class EnrichmentWorkflow:
             )
             return {"status": "FAILED", "error": fetch_result["error"]}
             
-        # 3. Run LLM Enrichment
-        enrich_payload = {
-            "text": fetch_result["text"],
-            "model": model,
-            "source_type": payload.get("source_type")
-        }
-        
-        enrich_result = await workflow.execute_activity(
-            "run_llm_enrichment",
-            enrich_payload,
-            start_to_close_timeout=timedelta(minutes=10),
+        # 3. Detect Relevant Frameworks dynamically
+        detect_result = await workflow.execute_activity(
+            "detect_relevant_frameworks",
+            {"text": fetch_result["text"], "model": "gpt-3.5-turbo"},
+            start_to_close_timeout=timedelta(minutes=2),
         )
+        frameworks = detect_result.get("frameworks", ["PREVENTIVE_MEDICINE"])
+        workflow.logger.info(f"Identified frameworks for agents: {frameworks}")
+
+        # 4. Run Parallel Multi-Perspective Extraction Agents
+        import asyncio
         
-        # --- Fallback Logic ---
-        should_fallback = not enrich_result["success"]
-        if enrich_result["success"]:
-            enrichment = enrich_result.get("enrichment", {})
-            facts = enrichment.get("facts", [])
-            if not facts:
-                # No facts extracted from a significant document is a red flag
-                should_fallback = True
-            else:
-                # Check average confidence
-                confidences = [f.get("confidence", 0) for f in facts]
-                avg_conf = sum(confidences) / len(confidences)
-                if avg_conf < 0.6: # Threshold for fallback
-                    should_fallback = True
-        
-        if should_fallback and "gpt" not in model.lower():
-            workflow.logger.info(f"Primary model {model} yielded low quality or failed. Falling back to gpt-4o-mini.")
-            model = "gpt-4o-mini"
-            enrich_payload["model"] = model
-            enrich_result = await workflow.execute_activity(
+        async def run_agent_for_framework(fw: str):
+            p = {
+                "text": fetch_result["text"],
+                "model": model,
+                "source_type": payload.get("source_type"),
+                "framework": fw
+            }
+            res = await workflow.execute_activity(
                 "run_llm_enrichment",
-                enrich_payload,
+                p,
                 start_to_close_timeout=timedelta(minutes=10),
             )
+            return fw, res
 
-        if not enrich_result["success"]:
+        agent_tasks = [run_agent_for_framework(fw) for fw in frameworks]
+        agent_results = await asyncio.gather(*agent_tasks, return_exceptions=True)
+        
+        # 5. Intelligently Merge Parallel Knowledge
+        merged_enrichment = {
+            "summary": "",
+            "primary_framework": frameworks[0],
+            "secondary_frameworks": frameworks[1:],
+            "topics": [],
+            "conditions": [],
+            "symptoms": [],
+            "interventions": [],
+            "nutrients": [],
+            "populations": [],
+            "facts": []
+        }
+        
+        total_prompt_tokens = 0
+        total_completion_tokens = 0
+        total_tokens = 0
+        success_count = 0
+        
+        for fw, res in agent_results:
+            if isinstance(res, dict) and res.get("success"):
+                success_count += 1
+                data = res.get("enrichment", {})
+                
+                # Set summary from primary agent if empty
+                if not merged_enrichment["summary"]:
+                     merged_enrichment["summary"] = data.get("summary", "")
+                
+                # Append array values with de-duplication where possible
+                for key in ["topics", "conditions", "symptoms", "interventions", "nutrients", "populations"]:
+                     vals = data.get(key, [])
+                     if isinstance(vals, list):
+                         merged_enrichment[key].extend(vals)
+                         merged_enrichment[key] = list(set(merged_enrichment[key])) # Deduplicate strings
+                
+                # Merge Facts tagged with Framework Origin
+                facts = data.get("facts", [])
+                if isinstance(facts, list):
+                    for f in facts:
+                         # Enhance fact record with perspective tag
+                         f["fact_text"] = f"[{fw}] {f.get('fact_text', '')}"
+                         merged_enrichment["facts"].append(f)
+                         
+                total_prompt_tokens += res.get("prompt_tokens", 0)
+                total_completion_tokens += res.get("completion_tokens", 0)
+                total_tokens += res.get("total_tokens", 0)
+
+        if success_count == 0:
             await workflow.execute_activity(
                 "update_enrichment_status",
                 {
                     "run_id": run_id,
                     "status": RunStatus.FAILED.value,
-                    "error_message": enrich_result["error"]
+                    "error_message": "All parallel agents failed to enrich content."
                 },
                 start_to_close_timeout=timedelta(seconds=30),
             )
-            return {"status": "FAILED", "error": enrich_result["error"]}
+            return {"status": "FAILED", "error": "All parallel agents failed"}
             
-        # 4. Persist Results to DB
+        # 6. Persist Merged Unified Knowledge to DB
         persist_payload = {
             "run_id": run_id,
             "document_id": doc_id,
-            "enrichment": enrich_result["enrichment"],
-            "model": model
+            "enrichment": merged_enrichment,
+            "model": f"Multi-Agent ({model})"
         }
         
         persist_result = await workflow.execute_activity(
@@ -127,15 +165,15 @@ class EnrichmentWorkflow:
             )
             return {"status": "FAILED", "error": persist_result["error"]}
         
-        # 5. Update Status
+        # 7. Finalize Unified Stream Metrics
         await workflow.execute_activity(
             "update_enrichment_status",
             {
                 "run_id": run_id,
                 "status": RunStatus.COMPLETED.value,
-                "prompt_tokens": enrich_result.get("prompt_tokens"),
-                "completion_tokens": enrich_result.get("completion_tokens"),
-                "total_tokens": enrich_result.get("total_tokens")
+                "prompt_tokens": total_prompt_tokens,
+                "completion_tokens": total_completion_tokens,
+                "total_tokens": total_tokens
             },
             start_to_close_timeout=timedelta(seconds=30),
         )

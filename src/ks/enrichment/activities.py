@@ -50,6 +50,50 @@ class EnrichmentActivities:
             return {"success": False, "error": str(e)}
 
     @activity.defn
+    async def detect_relevant_frameworks(self, payload: dict) -> dict:
+        """
+        Identifies which high-level scientific frameworks are present in the content.
+        Payload: text, model
+        """
+        text = payload["text"][:10000]
+        model = payload.get("model", "gpt-3.5-turbo")
+        
+        prompt = f"""
+        Categorize the content below into one or more of the following high-level Frameworks:
+        - EVIDENCE_BASED_WESTERN_MEDICINE (Standard protocols, pharmaceuticals, surgeries)
+        - NUTRITION_SCIENCE (Diet, foods, fasting, micronutrients, cooking)
+        - PHYSICAL_ACTIVITY_SCIENCE (Exercise, biomechanics, gym, recovery, cardio)
+        - HOLISTIC_TRADITIONAL_SYSTEMS (Herbs, TCM, Ayurveda, adaptogens, traditional systems)
+        - PREVENTIVE_MEDICINE (Screening, lab benchmarks, disease avoidance)
+        
+        Return valid JSON in this strict format:
+        {{"frameworks": ["FRAMEWORK_NAME_1", "FRAMEWORK_NAME_2"]}}
+        
+        Text Sample: {text}
+        """
+        
+        try:
+            api_key = self.settings.model.primary_api_key
+            resp = litellm.completion(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"},
+                api_key=api_key,
+                temperature=0
+            )
+            
+            output = json.loads(resp.choices[0].message.content)
+            # Default to at least one if empty
+            frameworks = output.get("frameworks", ["PREVENTIVE_MEDICINE"])
+            if not frameworks:
+                 frameworks = ["PREVENTIVE_MEDICINE"]
+                 
+            return {"success": True, "frameworks": frameworks}
+        except Exception as e:
+            logger.error(f"Framework detection failed: {e}")
+            return {"success": False, "frameworks": ["PREVENTIVE_MEDICINE"], "error": str(e)}
+
+    @activity.defn
     async def run_llm_enrichment(self, payload: dict) -> dict:
         """
         Calls litellm to parse the text and return structured JSON based on LLMEnrichmentOutput schema.
@@ -77,9 +121,49 @@ class EnrichmentActivities:
             - CONTRADICTIONS: Be extremely granular about drug-drug or drug-condition interactions.
             """
 
+        # Framework-Specific Agent Personalities
+        framework = payload.get("framework")
+        framework_context = ""
+        
+        if framework == "NUTRITION_SCIENCE":
+            framework_context = """
+            SPECIALIZED NUTRITION AGENT ACTIVE:
+            Focus on: 
+            - MACROS & MICROS: Precise numeric components (e.g., "Fiber: 10g").
+            - GLYCEMIC IMPACT: Insulogenic load, metabolic response.
+            - PREPARATION METHOD: How cooking/raw state impacts bioavailability.
+            - COMBINATION SYNERGY: Food pairing benefits (e.g., "Turmeric + Black pepper").
+            """
+        elif framework == "PHYSICAL_ACTIVITY_SCIENCE":
+            framework_context = """
+            SPECIALIZED MOVEMENT AGENT ACTIVE:
+            Focus on:
+            - EXERTION INTENSITY: Heart rate zones, VO2 max impact, RPE.
+            - MODALITY: Aerobic vs Anaerobic mechanics.
+            - RECOVERY: Hypertrophy markers, rest cycles, cortisol impact.
+            - BIOMECHANICS: Kinematic safety cues and postural adaptations.
+            """
+        elif framework == "PREVENTIVE_MEDICINE":
+            framework_context = """
+            SPECIALIZED DIAGNOSTIC AGENT ACTIVE:
+            Focus on:
+            - BIOMARKERS: LDL, HbA1c, CRP, fasting glucose benchmarks.
+            - SCREENING GUIDELINES: Age/risk thresholds for intervention.
+            - PROPHYLAXIS: Preventative thresholds and risk reduction ratios.
+            """
+        elif framework == "HOLISTIC_TRADITIONAL_SYSTEMS":
+            framework_context = """
+            SPECIALIZED TRADITIONAL SYSTEMS AGENT ACTIVE:
+            Focus on:
+            - ADAPTOGENS & HERBS: Herbal classification, tonic effects.
+            - GUT-BRAIN AXIS: Microbiome, digestive fire, or systemic connection.
+            - CONSTITUTIONAL EFFECTS: Warming/cooling properties or systemic balance impacts.
+            """
+
         prompt = f"""
         You are a world-class health knowledge graph extractor. Your goal is to convert medical text into high-fidelity structured intelligence.
         {clinical_context}
+        {framework_context}
         
         Extract the following attributes if present in the text:
         - CONDITIONS & SYMPTOMS: Medical conditions, diseases, and their associated symptoms.

@@ -85,6 +85,7 @@ async def main() -> None:
                 extraction_activities.store_extracted_artifact,
                 extraction_activities.update_extraction_status,
                 enrichment_activities.fetch_extracted_text,
+                enrichment_activities.detect_relevant_frameworks,
                 enrichment_activities.run_llm_enrichment,
                 enrichment_activities.persist_enrichment_results,
                 enrichment_activities.update_enrichment_status,
