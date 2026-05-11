@@ -11,6 +11,8 @@ from ks.discovery.schemas import (
     DiscoveryRunDetailResponse,
     DiscoveryRunRequest,
     DiscoveryRunResponse,
+    PaginatedCandidateResponse,
+    PaginatedDiscoveryRunResponse,
 )
 from ks.discovery.service import DiscoveryService
 
@@ -52,7 +54,7 @@ async def start_discovery_run(
     return run
 
 
-@router.get("/runs", response_model=dict)
+@router.get("/runs", response_model=PaginatedDiscoveryRunResponse)
 async def list_discovery_runs(
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
@@ -111,7 +113,7 @@ async def get_discovery_run(run_id: uuid.UUID, db: AsyncSession = Depends(get_db
 
 # ── Candidates ────────────────────────────────────────────────────────────
 
-@router.get("/candidates", response_model=dict)
+@router.get("/candidates", response_model=PaginatedCandidateResponse)
 async def list_all_candidates(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),

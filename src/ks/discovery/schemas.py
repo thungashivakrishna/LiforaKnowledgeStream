@@ -54,6 +54,13 @@ class DiscoveryRunResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class PaginatedDiscoveryRunResponse(BaseModel):
+    items: list[DiscoveryRunResponse]
+    total: int
+    limit: int
+    offset: int
+
+
 # ── Candidate Document ────────────────────────────────────────────────────────
 
 class CandidateDocumentResponse(BaseModel):
@@ -68,6 +75,13 @@ class CandidateDocumentResponse(BaseModel):
     evaluated_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class PaginatedCandidateResponse(BaseModel):
+    items: list[CandidateDocumentResponse]
+    total: int
+    limit: int
+    offset: int
 
 
 class DiscoveryRunDetailResponse(DiscoveryRunResponse):
