@@ -20,13 +20,10 @@ class EnrichmentWorkflow:
         """
         run_id = payload["run_id"]
         doc_id = payload["document_id"]
-        model = payload.get("model", "gpt-3.5-turbo")
         
-        # 1. We need the extracted text key from the DB to fetch the text.
-        # However, to keep workflows deterministic, we can either pass it in payload or use an activity.
-        # Let's create a quick activity to get the extracted_text_key from DB, or we can just pass it in payload from the Service.
-        # I didn't pass it in service. Let's pass it in service. 
-        # I will modify EnrichmentService to pass extracted_text_key.
+        # Establish explicit Multi-Step Hierarchy: 
+        # 1. Provided by payload -> 2. Default to DeepSeek -> 3. Fallback if needed to GPT.
+        model = payload.get("model", "deepseek/deepseek-chat")
         
         extracted_text_key = payload.get("extracted_text_key")
         if not extracted_text_key:
@@ -51,30 +48,59 @@ class EnrichmentWorkflow:
             )
             return {"status": "FAILED", "error": fetch_result["error"]}
             
-        # 3. Detect Relevant Frameworks dynamically
+        # 3. Detect Relevant Frameworks dynamically (using fast model)
         detect_result = await workflow.execute_activity(
             "detect_relevant_frameworks",
-            {"text": fetch_result["text"], "model": "gpt-3.5-turbo"},
+            {"text": fetch_result["text"], "model": "gpt-4o-mini"},
             start_to_close_timeout=timedelta(minutes=2),
         )
         frameworks = detect_result.get("frameworks", ["PREVENTIVE_MEDICINE"])
-        workflow.logger.info(f"Identified frameworks for agents: {frameworks}")
+        workflow.logger.info(f"Identified frameworks for parallel agents: {frameworks}")
 
-        # 4. Run Parallel Multi-Perspective Extraction Agents
+        # 4. Run Parallel Multi-Perspective Extraction Agents with Robust Fallback
         import asyncio
         
         async def run_agent_for_framework(fw: str):
             p = {
                 "text": fetch_result["text"],
-                "model": model,
+                "model": model, # Begins with DeepSeek
                 "source_type": payload.get("source_type"),
                 "framework": fw
             }
+            
+            workflow.logger.info(f"Agent {fw} starting with primary model: {model}")
             res = await workflow.execute_activity(
                 "run_llm_enrichment",
                 p,
                 start_to_close_timeout=timedelta(minutes=10),
             )
+            
+            # Validation & Fallback Routine
+            should_fallback = not res.get("success", False)
+            
+            if not should_fallback:
+                enrichment = res.get("enrichment", {})
+                facts = enrichment.get("facts", [])
+                if not facts:
+                    should_fallback = True
+                else:
+                    # Calculate confidence score
+                    confidences = [f.get("confidence", 0) for f in facts]
+                    avg_conf = sum(confidences) / len(confidences)
+                    if avg_conf < 0.5: # Threshold logic
+                        workflow.logger.info(f"Low confidence ({avg_conf}) detected for framework {fw}. Initiating fallback.")
+                        should_fallback = True
+            
+            # Critical Path Fallback Mechanism
+            if should_fallback and "gpt" not in model.lower():
+                workflow.logger.warn(f"Agent {fw} primary failed or low confidence. Falling back to gpt-4o-mini.")
+                p["model"] = "gpt-4o-mini"
+                res = await workflow.execute_activity(
+                    "run_llm_enrichment",
+                    p,
+                    start_to_close_timeout=timedelta(minutes=10),
+                )
+                
             return fw, res
 
         agent_tasks = [run_agent_for_framework(fw) for fw in frameworks]

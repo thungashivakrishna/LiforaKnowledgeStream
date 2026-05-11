@@ -89,16 +89,44 @@ class DiscoveryWorkflow:
 
         try:
             import asyncio
-            # Run process_single_source for every source simultaneously
-            source_results = await asyncio.gather(
-                *[process_single_source(source) for source in sources],
-                return_exceptions=True
-            )
             
-            # Sum total valid returns
-            for res in source_results:
-                if isinstance(res, int):
-                    total_discovered += res
+            current_cycle = 1
+            # Configure recursion. In production this could accept limit from payload.
+            MAX_CYCLES = payload.get("max_cycles", 10) 
+            CONTINUOUS = payload.get("continuous", True)
+            
+            while CONTINUOUS and current_cycle <= MAX_CYCLES:
+                workflow.logger.info(f"🚀 Autonomous Discovery Cycle {current_cycle} initiating...")
+                
+                # Run process_single_source for every source simultaneously in this cycle
+                source_results = await asyncio.gather(
+                    *[process_single_source(source) for source in sources],
+                    return_exceptions=True
+                )
+                
+                # Sum new discovered items in this cycle
+                cycle_discovery = 0
+                for res in source_results:
+                    if isinstance(res, int):
+                        cycle_discovery += res
+                
+                total_discovered += cycle_discovery
+                
+                workflow.logger.info(f"✅ Finished Cycle {current_cycle}. Found {cycle_discovery} items. Total: {total_discovered}")
+                
+                # If this cycle didn't find ANY new items across all sources, exit early to save CPU
+                if cycle_discovery == 0 and current_cycle > 1:
+                     workflow.logger.info("No further items discovered in deep sweep. Stopping cycle loop.")
+                     break
+                     
+                # Prepare for next cycle
+                current_cycle += 1
+                
+                if current_cycle <= MAX_CYCLES:
+                    # Add sleep buffer to act like a real background scanner
+                    sleep_seconds = payload.get("cycle_delay_seconds", 30)
+                    workflow.logger.info(f"Sleeping for {sleep_seconds}s before next autonomous cycle...")
+                    await workflow.sleep(timedelta(seconds=sleep_seconds))
 
             await workflow.execute_activity(
                 "finalize_discovery_run",

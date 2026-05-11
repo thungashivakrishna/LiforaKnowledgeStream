@@ -56,7 +56,7 @@ class EnrichmentActivities:
         Payload: text, model
         """
         text = payload["text"][:10000]
-        model = payload.get("model", "gpt-3.5-turbo")
+        model = payload.get("model", self.settings.model.primary_model)
         
         prompt = f"""
         Categorize the content below into one or more of the following high-level Frameworks:
@@ -100,7 +100,7 @@ class EnrichmentActivities:
         Payload keys: text, model
         """
         text = payload["text"]
-        model = payload.get("model", "gpt-3.5-turbo")
+        model = payload.get("model", self.settings.model.primary_model)
         
         # Truncate text to avoid overloading prompt context
         truncated_text = text[:25000]
@@ -211,7 +211,7 @@ class EnrichmentActivities:
                     api_base=api_base
                 )
             elif "gpt" in m or "openai" in m:
-                api_key = self.settings.model.secondary_api_key
+                api_key = self.settings.model.tertiary_api_key
                 # OpenAI gpt-4o-mini supports full structured output with Pydantic class
                 call_kwargs = dict(
                     model=model,
