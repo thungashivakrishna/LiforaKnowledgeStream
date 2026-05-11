@@ -30,6 +30,7 @@ const Discovery = () => {
   // Trigger Form
   const [mode, setMode] = useState('FOCUSED');
   const [selectedSources, setSelectedSources] = useState([]);
+  const [selectedFrameworks, setSelectedFrameworks] = useState([]);
   const [topicInput, setTopicInput] = useState('');
 
   // Expanded Details State
@@ -84,12 +85,13 @@ const Discovery = () => {
         mode: mode,
         source_ids: selectedSources,
         filter_profile_id: profileId,
-        framework_scope: []
+        framework_scope: selectedFrameworks
       };
 
       await axios.post(`${API_BASE}/discovery/runs`, runPayload);
       setTopicInput('');
       setSelectedSources([]);
+      setSelectedFrameworks([]);
       fetchRuns();
     } catch (err) {
       console.error('Job trigger error:', err);
@@ -214,6 +216,44 @@ const Discovery = () => {
                   ))}
                   {sources.length === 0 && <div className="p-2 text-slate-600 text-center text-[10px]">No sources loaded</div>}
                 </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-black tracking-widest uppercase text-slate-500 mb-2">Target Framework Agents</label>
+                <div className="bg-slate-950 border border-slate-800 rounded-xl p-2 space-y-1">
+                  {[
+                    {id: 'NUTRITION_SCIENCE', name: 'Nutrition Science'},
+                    {id: 'PHYSICAL_ACTIVITY_SCIENCE', name: 'Physical Activity'},
+                    {id: 'PREVENTIVE_MEDICINE', name: 'Preventive Medicine'},
+                    {id: 'HOLISTIC_TRADITIONAL_SYSTEMS', name: 'Holistic Systems'},
+                    {id: 'EVIDENCE_BASED_WESTERN_MEDICINE', name: 'Western Evidence'}
+                  ].map((fw) => (
+                    <label 
+                      key={fw.id} 
+                      className={clsx(
+                        "flex items-center gap-3 p-2 rounded-lg cursor-pointer transition-colors text-xs",
+                        selectedFrameworks.includes(fw.id) ? "bg-emerald-500/10 border border-emerald-500/20 text-emerald-400" : "text-slate-400 hover:bg-slate-900 hover:text-slate-300"
+                      )}
+                    >
+                      <input 
+                        type="checkbox" 
+                        className="accent-emerald-500" 
+                        checked={selectedFrameworks.includes(fw.id)}
+                        onChange={(e) => {
+                          if (e.target.checked) {
+                            setSelectedFrameworks([...selectedFrameworks, fw.id]);
+                          } else {
+                            setSelectedFrameworks(selectedFrameworks.filter(f => f !== fw.id));
+                          }
+                        }}
+                      />
+                      <span className="truncate">{fw.name}</span>
+                    </label>
+                  ))}
+                </div>
+                <p className="text-[10px] text-slate-600 mt-1 flex items-center gap-1">
+                   Select to constrain background analysis strictly to selected agents.
+                </p>
               </div>
 
               <button 

@@ -54,8 +54,18 @@ class EnrichmentWorkflow:
             {"text": fetch_result["text"], "model": "gpt-4o-mini"},
             start_to_close_timeout=timedelta(minutes=2),
         )
-        frameworks = detect_result.get("frameworks", ["PREVENTIVE_MEDICINE"])
-        workflow.logger.info(f"Identified frameworks for parallel agents: {frameworks}")
+        detected = detect_result.get("frameworks", ["PREVENTIVE_MEDICINE"])
+        
+        # User Override: Filter framework execution by explicit user input scope
+        framework_scope = payload.get("framework_scope", [])
+        if framework_scope and isinstance(framework_scope, list) and len(framework_scope) > 0:
+            # Intersect detected frameworks with scope, or just force scope if desired
+            # To obey the user specifically: just set to scope.
+            frameworks = [fw for fw in framework_scope if fw]
+            workflow.logger.info(f"🔒 Restricting agents to USER SCOPE: {frameworks}")
+        else:
+            frameworks = detected
+            workflow.logger.info(f"🔓 identified frameworks for parallel agents: {frameworks}")
 
         # 4. Run Parallel Multi-Perspective Extraction Agents with Robust Fallback
         import asyncio

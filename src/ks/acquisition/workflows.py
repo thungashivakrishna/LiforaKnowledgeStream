@@ -64,16 +64,7 @@ class AcquisitionWorkflow:
                     start_to_close_timeout=timedelta(minutes=1),
                 )
 
-            object_key = await workflow.execute_activity(
-                "store_raw_artifact",
-                {
-                    "document_id": doc_id,
-                    "content_hash": fetch_result["content_hash"],
-                    "content_type": fetch_result["content_type"],
-                    "content": fetch_result["content"],
-                },
-                start_to_close_timeout=timedelta(minutes=5),
-            )
+            object_key = fetch_result["object_key"]
 
             await workflow.execute_activity(
                 "update_fetch_status",

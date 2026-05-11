@@ -82,7 +82,8 @@ class DocumentIngestionWorkflow:
                 "run_id": enrich_run_id,
                 "document_id": doc_id,
                 "extracted_text_key": extracted_text_key,
-                "model": "gpt-4o-mini"
+                "model": "deepseek/deepseek-chat", # Default to deepseek
+                "framework_scope": payload.get("framework_scope", [])
             },
             id=f"enr-{doc_id}",
         )

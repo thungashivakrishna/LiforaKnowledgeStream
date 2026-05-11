@@ -149,6 +149,24 @@ class AcquisitionActivities:
             hasher = xxhash.xxh64()
             hasher.update(content)
             content_hash = hasher.hexdigest()
+
+            # DIRECT STORAGE: Write to Minio immediately to protect Temporal payload history
+            ext = "html" if "html" in content_type else "pdf" if "pdf" in content_type else "bin"
+            object_key = f"{doc_id}/{content_hash}.{ext}"
+            
+            bucket = self.settings.minio.bucket_raw
+            if not self.minio_client.bucket_exists(bucket):
+                self.minio_client.make_bucket(bucket)
+                
+            content_file = io.BytesIO(content)
+            self.minio_client.put_object(
+                bucket,
+                object_key,
+                content_file,
+                length=len(content),
+                content_type=content_type
+            )
+            logger.info(f"Directly stored {len(content)} bytes to MinIO object_key: {object_key}")
             
             return {
                 "document_id": str(doc_id),
@@ -156,8 +174,8 @@ class AcquisitionActivities:
                 "content_hash": content_hash,
                 "content_type": content_type,
                 "size_bytes": len(content),
-                "content": content,
-                "content_text": text if "html" in content_type else "",
+                "object_key": object_key,
+                "content_text": text[:50000], # Truncate text returns to protect boundary
                 "success": True
             }
         except Exception as e:

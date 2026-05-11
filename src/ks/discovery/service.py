@@ -114,6 +114,7 @@ class DiscoveryService:
             "mode": run.mode,
             "filter_profile": profile_data,
             "sources": source_data,
+            "framework_scope": run.framework_scope.get("frameworks", []) if run.framework_scope else []
         }
         
         await client.start_workflow(

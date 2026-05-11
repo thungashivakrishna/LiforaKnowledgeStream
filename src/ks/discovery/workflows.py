@@ -66,7 +66,8 @@ class DiscoveryWorkflow:
                          {
                              "document_id": item["document_id"],
                              "url": item["url"],
-                             "force_refresh": False
+                             "force_refresh": False,
+                             "framework_scope": payload.get("framework_scope", [])
                          },
                          id=f"ingest-doc-{item['document_id']}",
                      )
