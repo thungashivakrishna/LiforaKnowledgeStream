@@ -1,12 +1,13 @@
 """Graph activities — worker tasks for syncing knowledge to Neo4j."""
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Any, List
 
 from neo4j import GraphDatabase
 from temporalio import activity
 
+from ks.common import redis_client
 from ks.config.settings import get_settings
 from ks.domain.enums import RunStatus
 
@@ -22,15 +23,20 @@ class GraphActivities:
     @activity.defn
     async def initialize_graph_schema(self) -> None:
         """Ensures Neo4j constraints and indices exist for high-performance syncing."""
+        cached = await redis_client.get_cache("cache:graph:schema_ready")
+        if cached is not None:
+            logger.info("Graph schema already initialized (cache hit), skipping.")
+            return
+
         def _init_tx(tx):
             # Unique constraints for core nodes
             tx.run("CREATE CONSTRAINT source_id_unique IF NOT EXISTS FOR (s:Source) REQUIRE s.id IS UNIQUE")
             tx.run("CREATE CONSTRAINT doc_id_unique IF NOT EXISTS FOR (d:Document) REQUIRE d.id IS UNIQUE")
             tx.run("CREATE CONSTRAINT entity_name_unique IF NOT EXISTS FOR (e:Entity) REQUIRE e.name IS UNIQUE")
-            
+
             # Indices for specialized tags
             tag_labels = [
-                "Framework", "Topic", "Condition", "Symptom", "Intervention", 
+                "Framework", "Topic", "Condition", "Symptom", "Intervention",
                 "Food", "Nutrient", "ActivityType", "Population"
             ]
             for label in tag_labels:
@@ -40,6 +46,7 @@ class GraphActivities:
             with self.neo4j_driver.session() as session:
                 session.execute_write(_init_tx)
             logger.info("Graph schema (constraints/indices) initialized successfully.")
+            await redis_client.set_cache("cache:graph:schema_ready", datetime.now(timezone.utc).isoformat())
         except Exception as e:
             logger.error(f"Failed to initialize graph schema: {e}")
             raise e
@@ -54,27 +61,27 @@ class GraphActivities:
         from ks.domain.models import DocumentRegistry, SourceRegistry, KnowledgeTag, KnowledgeFact
         from sqlalchemy import select
         from sqlalchemy.orm import joinedload
-        
+
         doc_id = uuid.UUID(payload["document_id"])
-        
+
         async with SessionLocal() as session:
             try:
                 # 1. Fetch Doc and Source
                 stmt = select(DocumentRegistry).options(joinedload(DocumentRegistry.source)).where(DocumentRegistry.id == doc_id)
                 res = await session.execute(stmt)
                 doc = res.scalar_one_or_none()
-                
+
                 if not doc:
                     return {"success": False, "error": f"Document {doc_id} not found"}
-                
+
                 # 2. Fetch Tags
                 res = await session.execute(select(KnowledgeTag).where(KnowledgeTag.document_id == doc_id))
                 tags = res.scalars().all()
-                
+
                 # 3. Fetch Facts
                 res = await session.execute(select(KnowledgeFact).where(KnowledgeFact.document_id == doc_id))
                 facts = res.scalars().all()
-                
+
                 data = {
                     "document": {
                         "id": str(doc.id),
@@ -101,7 +108,7 @@ class GraphActivities:
                         for f in facts
                     ]
                 }
-                
+
                 return {"success": True, "data": data}
             except Exception as e:
                 logger.error(f"Failed to fetch graph data: {e}")
@@ -118,10 +125,15 @@ class GraphActivities:
         src = data["source"]
         tags = data["tags"]
         facts = data["facts"]
-        
+
+        lock_key = f"lock:graph:{doc['id']}"
+        if not await redis_client.acquire_lock(lock_key, ttl=redis_client.LOCK_GRAPH):
+            from temporalio.exceptions import ApplicationError
+            raise ApplicationError(f"Graph lock held for {doc['id']}", non_retryable=False)
+
         nodes_created = 0
         edges_created = 0
-        
+
         def _sync_tx(tx):
             # ── 1. Source + Document nodes ────────────────────────────────────────
             tx.run(
@@ -139,7 +151,7 @@ class GraphActivities:
                 "MERGE (s)-[:PUBLISHED]->(d)",
                 src_id=src["id"], doc_id=doc["id"]
             )
-            
+
             # ── 3. Tags — specialized labels ─────────────────────────────────────
             # Map tag types to Neo4j labels
             label_map = {
@@ -153,7 +165,7 @@ class GraphActivities:
                 "ACTIVITY": "ActivityType",
                 "POPULATION": "Population",
             }
-            
+
             for t_type, label in label_map.items():
                 filtered_tags = [t for t in tags if t["type"] == t_type]
                 if filtered_tags:
@@ -165,7 +177,7 @@ class GraphActivities:
                         f"MERGE (d)-[:HAS_{label.upper()}]->(t)",
                         tags=filtered_tags, doc_id=doc["id"]
                     )
-            
+
             # ── 4. Facts — SPO triples with semantic labels ──────────────────────
             spo_facts = [f for f in facts if f.get("subject") and f.get("predicate") and f.get("object")]
             if spo_facts:
@@ -179,7 +191,7 @@ class GraphActivities:
                     "SET r.predicate = fact.predicate, r.confidence = fact.confidence",
                     facts=spo_facts
                 )
-                
+
                 # Semantic Refinement: Link Entity nodes to specialized Tag nodes if names match
                 tx.run(
                     "MATCH (e:Entity) MATCH (t:Condition) WHERE e.name = t.value MERGE (e)-[:IS_A]->(t)"
@@ -190,14 +202,14 @@ class GraphActivities:
                 tx.run(
                     "MATCH (e:Entity) MATCH (t:Intervention) WHERE e.name = t.value MERGE (e)-[:IS_A]->(t)"
                 )
-        
+
         try:
             with self.neo4j_driver.session() as session:
                 session.execute_write(_sync_tx)
-            
-            node_count = 2 + len(tags) + len(facts)  # source + doc + tags + facts
-            edge_count = 1 + len(tags) + len(facts)  # published + tag edges + contains
-            
+
+            node_count = 2 + len(tags) + len(facts)
+            edge_count = 1 + len(tags) + len(facts)
+
             return {
                 "success": True,
                 "nodes_created": node_count,
@@ -206,6 +218,8 @@ class GraphActivities:
         except Exception as e:
             logger.error(f"Failed to sync to Neo4j: {e}")
             return {"success": False, "error": str(e)}
+        finally:
+            await redis_client.release_lock(lock_key)
 
     @activity.defn
     async def update_graph_status(self, payload: dict) -> None:
@@ -214,13 +228,13 @@ class GraphActivities:
         """
         from apps.api.database import SessionLocal
         from sqlalchemy import select
-        
+
         run_id = uuid.UUID(payload["run_id"])
         status = RunStatus(payload["status"])
         nodes = payload.get("nodes_created", 0)
         edges = payload.get("edges_created", 0)
         error_msg = payload.get("error_message")
-        
+
         from ks.domain.models import GraphRun, DocumentRegistry
         from ks.domain.enums import DocumentStatus
 
@@ -234,7 +248,7 @@ class GraphActivities:
                 run.edges_created = edges
                 if error_msg:
                     run.error_message = error_msg
-                
+
                 # CRITICAL MISSING LINK: Update the overarching Document state to final state 'INDEXED'
                 if status == RunStatus.COMPLETED:
                     doc_res = await session.execute(select(DocumentRegistry).where(DocumentRegistry.id == run.document_id))
@@ -242,5 +256,5 @@ class GraphActivities:
                     if doc:
                         logger.info(f"FINALIZING DOCUMENT FLOW: Setting {doc.id} to INDEXED")
                         doc.status = DocumentStatus.INDEXED
-            
+
             await session.commit()

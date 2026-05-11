@@ -1,4 +1,5 @@
 """Chunking activities — worker tasks for chunking text, generating embeddings, and indexing in Qdrant."""
+import hashlib
 import logging
 import uuid
 from datetime import datetime
@@ -10,6 +11,7 @@ from qdrant_client import QdrantClient
 from qdrant_client.http import models as qdrant_models
 from temporalio import activity
 
+from ks.common import redis_client
 from ks.config.settings import get_settings
 from ks.domain.enums import RunStatus
 from ks.domain.models import ChunkRun, KnowledgeChunk, DocumentRegistry
@@ -35,18 +37,18 @@ class ChunkingActivities:
         # For text-embedding-3-small or text-embedding-ada-002, size is 1536.
         # We can make this dynamic if needed, but we'll hardcode 1536 for now.
         embedding_model = payload.get("embedding_model", "text-embedding-3-small")
-        vector_size = 1536 
-        
+        vector_size = 1536
+
         try:
             collections = self.qdrant_client.get_collections().collections
             collection_names = [c.name for c in collections]
-            
+
             if self.collection_name not in collection_names:
                 logger.info(f"Creating Qdrant collection '{self.collection_name}' with size {vector_size}")
                 self.qdrant_client.create_collection(
                     collection_name=self.collection_name,
                     vectors_config=qdrant_models.VectorParams(
-                        size=vector_size, 
+                        size=vector_size,
                         distance=qdrant_models.Distance.COSINE
                     )
                 )
@@ -64,9 +66,9 @@ class ChunkingActivities:
         object_key = payload["extracted_object_key"]
         doc_id_str = payload["document_id"]
         bucket = self.settings.minio.bucket_extracted
-        
+
         logger.info(f"Fetching extracted text from MinIO: {bucket}/{object_key}")
-        
+
         try:
             # 1. Fetch Text
             response = self.minio_client.get_object(bucket, object_key)
@@ -74,16 +76,16 @@ class ChunkingActivities:
             text = content_bytes.decode("utf-8")
             response.close()
             response.release_conn()
-            
+
             # 2. Fetch Metadata (Frameworks, Topics)
             from apps.api.database import SessionLocal
             from ks.domain.models import KnowledgeTag
             from sqlalchemy import select
-            
+
             doc_id = uuid.UUID(doc_id_str)
             primary_framework = None
             topics = []
-            
+
             async with SessionLocal() as session:
                 res = await session.execute(select(KnowledgeTag).where(KnowledgeTag.document_id == doc_id))
                 tags = res.scalars().all()
@@ -92,7 +94,7 @@ class ChunkingActivities:
                         primary_framework = tag.tag_value
                     elif tag.tag_type.name == "TOPIC":
                         topics.append(tag.tag_value)
-                        
+
             return {
                 "object_key": object_key,
                 "text": text,
@@ -113,20 +115,20 @@ class ChunkingActivities:
             if end > len(text):
                 chunks.append(text[start:])
                 break
-            
+
             # Try to find a good breaking point (newline or space)
             break_point = text.rfind("\n\n", start, end)
             if break_point == -1:
                 break_point = text.rfind("\n", start, end)
             if break_point == -1 or break_point < start + (chunk_size // 2):
                 break_point = text.rfind(" ", start, end)
-                
+
             if break_point == -1 or break_point < start + (chunk_size // 2):
                 break_point = end
-                
+
             chunks.append(text[start:break_point].strip())
             start = break_point - overlap
-            
+
         return [c for c in chunks if c] # Remove empty chunks
 
     @activity.defn
@@ -137,51 +139,57 @@ class ChunkingActivities:
         """
         text = payload["text"]
         model = payload.get("embedding_model", "text-embedding-3-small")
-        
+
         try:
             # 1. Split Text
             raw_chunks = self._split_text(text)
             logger.info(f"Split text into {len(raw_chunks)} chunks.")
-            
+
             if not raw_chunks:
                 return {"success": True, "chunks": []}
-                
-            # 2. Generate Embeddings
-            # litellm can take a list of strings
-            logger.info(f"Generating embeddings using model: {model}")
-            
-            # Use embedding key from settings
+
+            # 2. Check Redis cache for each chunk's embedding
             api_key = self.settings.model.embedding_api_key
-            
-            response = litellm.embedding(
-                model=model,
-                input=raw_chunks,
-                api_key=api_key
-            )
-            
+            cached_vectors: dict[int, list] = {}
+            uncached_indices: list[int] = []
+            uncached_texts: list[str] = []
+
+            for i, chunk_text in enumerate(raw_chunks):
+                chunk_hash = hashlib.sha256(chunk_text.encode()).hexdigest()
+                cached = await redis_client.get_cache(f"cache:embedding:{chunk_hash}")
+                if cached is not None:
+                    cached_vectors[i] = cached
+                else:
+                    uncached_indices.append(i)
+                    uncached_texts.append(chunk_text)
+
+            total_tokens = 0
+            if uncached_texts:
+                logger.info(f"Generating embeddings for {len(uncached_texts)}/{len(raw_chunks)} uncached chunks")
+                response = litellm.embedding(model=model, input=uncached_texts, api_key=api_key)
+                usage = getattr(response, "usage", None)
+                total_tokens = getattr(usage, "total_tokens", 0) if usage else 0
+
+                for j, idx in enumerate(uncached_indices):
+                    vector = response.data[j]["embedding"]
+                    chunk_hash = hashlib.sha256(raw_chunks[idx].encode()).hexdigest()
+                    await redis_client.set_cache(f"cache:embedding:{chunk_hash}", vector)
+                    cached_vectors[idx] = vector
+            else:
+                logger.info(f"All {len(raw_chunks)} chunk embeddings served from cache")
+
             processed_chunks = []
             for i, chunk_text in enumerate(raw_chunks):
-                # The response.data list aligns with the input list
-                embedding_vector = response.data[i]["embedding"]
-                
-                # We pre-generate UUIDs for Qdrant and Postgres
-                point_id = str(uuid.uuid4())
-                
                 processed_chunks.append({
                     "chunk_index": i,
                     "chunk_text": chunk_text,
-                    "qdrant_point_id": point_id,
-                    "embedding": embedding_vector,
-                    # We could estimate token count, but omitting for prototype
-                    "token_count": len(chunk_text) // 4 
+                    "qdrant_point_id": str(uuid.uuid4()),
+                    "embedding": cached_vectors[i],
+                    "token_count": len(chunk_text) // 4
                 })
-                
-            # Extract token usage
-            usage = getattr(response, "usage", None)
-            total_tokens = getattr(usage, "total_tokens", 0) if usage else 0
-                
+
             return {"success": True, "chunks": processed_chunks, "total_tokens": total_tokens}
-            
+
         except Exception as e:
             logger.error(f"Failed to split and embed text: {e}")
             return {"success": False, "error": str(e)}
@@ -196,16 +204,21 @@ class ChunkingActivities:
         doc_id = payload["document_id"]
         primary_fw = payload.get("primary_framework")
         topics = payload.get("topics", [])
-        
+
         if not chunks:
             return {"success": True}
-            
+
+        lock_key = f"lock:qdrant:{doc_id}"
+        if not await redis_client.acquire_lock(lock_key, ttl=redis_client.LOCK_QDRANT):
+            from temporalio.exceptions import ApplicationError
+            raise ApplicationError(f"Qdrant lock held for {doc_id}", non_retryable=False)
+
         try:
             points = []
             for chunk in chunks:
                 point_id = chunk["qdrant_point_id"]
                 vector = chunk["embedding"]
-                
+
                 # Payload metadata
                 meta = {
                     "document_id": doc_id,
@@ -214,7 +227,7 @@ class ChunkingActivities:
                     "framework": primary_fw,
                     "topics": topics
                 }
-                
+
                 points.append(
                     qdrant_models.PointStruct(
                         id=point_id,
@@ -222,17 +235,19 @@ class ChunkingActivities:
                         payload=meta
                     )
                 )
-                
+
             logger.info(f"Upserting {len(points)} points into Qdrant collection '{self.collection_name}'")
             self.qdrant_client.upsert(
                 collection_name=self.collection_name,
                 points=points
             )
-            
+
             return {"success": True}
         except Exception as e:
             logger.error(f"Failed to index in Qdrant: {e}")
             return {"success": False, "error": str(e)}
+        finally:
+            await redis_client.release_lock(lock_key)
 
     @activity.defn
     async def persist_chunk_metadata(self, payload: dict) -> dict:
@@ -241,14 +256,14 @@ class ChunkingActivities:
         Payload keys: chunks, document_id, primary_framework, topics, embedding_model
         """
         from apps.api.database import SessionLocal
-        
+
         doc_id = uuid.UUID(payload["document_id"])
         chunks = payload["chunks"]
         model = payload["embedding_model"]
         primary_fw = payload.get("primary_framework")
         topics = payload.get("topics", [])
-        
-        # We need to map string to Enum if applicable, but Framework is an Enum. 
+
+        # We need to map string to Enum if applicable, but Framework is an Enum.
         # In this prototype, we'll just store it if it matches, or leave it None.
         from ks.domain.enums import Framework
         fw_enum = None
@@ -257,7 +272,7 @@ class ChunkingActivities:
                 fw_enum = Framework(primary_fw)
             except ValueError:
                 pass
-        
+
         async with SessionLocal() as session:
             try:
                 for chunk in chunks:
@@ -272,10 +287,10 @@ class ChunkingActivities:
                         embedding_model=model
                     )
                     session.add(db_chunk)
-                    
+
                 await session.commit()
                 return {"success": True}
-                
+
             except Exception as e:
                 await session.rollback()
                 logger.error(f"Failed to persist chunk metadata to DB: {e}")
@@ -288,13 +303,13 @@ class ChunkingActivities:
         """
         from apps.api.database import SessionLocal
         from sqlalchemy import select
-        
+
         run_id = uuid.UUID(payload["run_id"])
         status = RunStatus(payload["status"])
         chunk_count = payload.get("chunk_count", 0)
         total_tokens = payload.get("total_tokens", 0)
         error_msg = payload.get("error_message")
-        
+
         async with SessionLocal() as session:
             res = await session.execute(select(ChunkRun).where(ChunkRun.id == run_id))
             run = res.scalar_one_or_none()
@@ -306,5 +321,5 @@ class ChunkingActivities:
                     run.total_tokens = total_tokens
                 if error_msg:
                     run.error_message = error_msg
-            
+
             await session.commit()
