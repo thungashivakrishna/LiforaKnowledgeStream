@@ -133,13 +133,19 @@ const KnowledgeLibrary = () => {
               >
                 <div className="flex items-start justify-between mb-3">
                   <div className="flex items-center gap-2">
-                    <span className="flex items-center gap-1 text-[10px] uppercase tracking-wider font-bold text-emerald-400 bg-emerald-400/10 px-2 py-0.5 rounded-full">
+                    <span className={clsx(
+                      "flex items-center gap-1 text-[10px] uppercase tracking-wider font-bold px-2 py-0.5 rounded-full",
+                      doc.status === 'INDEXED' ? "text-emerald-400 bg-emerald-400/10" :
+                      doc.status === 'ENRICHED' ? "text-blue-400 bg-blue-400/10" :
+                      doc.status === 'EXTRACTED' ? "text-amber-400 bg-amber-400/10" :
+                      "text-slate-400 bg-slate-400/10"
+                    )}>
                       <CheckCircle2 className="w-3 h-3" />
-                      Extracted
+                      {doc.status?.toLowerCase() || 'Processing'}
                     </span>
                   </div>
                   <span className="text-xs text-slate-500 font-medium">
-                    {format(new Date(doc.created_at), 'MMM d, yyyy')}
+                    {format(new Date(doc.updated_at || doc.created_at), 'MMM d, h:mm a')}
                   </span>
                 </div>
                 
@@ -263,7 +269,7 @@ const KnowledgeLibrary = () => {
                     </a>
                     <div className="flex items-center gap-1.5">
                       <Calendar className="w-4 h-4" />
-                      {format(new Date(docDetails.created_at), 'MMM d, yyyy')}
+                      Updated {format(new Date(docDetails.updated_at || docDetails.created_at), 'MMM d, h:mm a')}
                     </div>
                   </div>
                 </div>

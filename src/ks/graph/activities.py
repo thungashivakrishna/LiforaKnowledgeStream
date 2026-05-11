@@ -144,14 +144,14 @@ class GraphActivities:
             # ── 4. Facts — SPO triples with semantic labels ──────────────────────
             spo_facts = [f for f in facts if f.get("subject") and f.get("predicate") and f.get("object")]
             if spo_facts:
-                # We try to infer labels from the tags we already processed
+                # Standard native Cypher replacement for APOC - store relation name as predicate attribute
                 tx.run(
                     "UNWIND $facts AS fact "
                     "MERGE (subj:Entity {name: fact.subject}) "
                     "MERGE (obj:Entity {name: fact.object}) "
                     "WITH subj, obj, fact "
-                    "CALL apoc.merge.relationship(subj, fact.predicate, {}, {confidence: fact.confidence}, obj) "
-                    "YIELD rel RETURN count(rel)",
+                    "MERGE (subj)-[r:RELATED_TO]->(obj) "
+                    "SET r.predicate = fact.predicate, r.confidence = fact.confidence",
                     facts=spo_facts
                 )
                 
@@ -180,27 +180,6 @@ class GraphActivities:
             }
         except Exception as e:
             logger.error(f"Failed to sync to Neo4j: {e}")
-            # If APOC isn't available, retry without SPO triples
-            if "apoc" in str(e).lower():
-                try:
-                    with self.neo4j_driver.session() as session:
-                        def _sync_no_apoc(tx):
-                            tx.run("MERGE (s:Source {id: $id}) SET s.name = $name, s.url = $url", id=src["id"], name=src["name"], url=src["url"])
-                            tx.run("MERGE (d:Document {id: $id}) SET d.title = $title, d.url = $url", id=doc["id"], title=doc["title"], url=doc["url"])
-                            tx.run("MATCH (s:Source {id: $src_id}) MATCH (d:Document {id: $doc_id}) MERGE (s)-[:PUBLISHED]->(d)", src_id=src["id"], doc_id=doc["id"])
-                            if fw_tags:
-                                tx.run("UNWIND $tags AS tag MERGE (t:Framework {value: tag.value}) WITH t MATCH (d:Document {id: $doc_id}) MERGE (d)-[:BELONGS_TO]->(t)", tags=fw_tags, doc_id=doc["id"])
-                            if tp_tags:
-                                tx.run("UNWIND $tags AS tag MERGE (t:Topic {value: tag.value}) WITH t MATCH (d:Document {id: $doc_id}) MERGE (d)-[:HAS_TOPIC]->(t)", tags=tp_tags, doc_id=doc["id"])
-                            if facts:
-                                tx.run("UNWIND $facts AS fact MERGE (f:Fact {text: fact.text}) SET f.confidence = fact.confidence WITH f MATCH (d:Document {id: $doc_id}) MERGE (d)-[:CONTAINS]->(f)", facts=facts, doc_id=doc["id"])
-                        session.execute_write(_sync_no_apoc)
-                    node_count = 2 + len(tags) + len(facts)
-                    edge_count = 1 + len(tags) + len(facts)
-                    return {"success": True, "nodes_created": node_count, "edges_created": edge_count}
-                except Exception as e2:
-                    logger.error(f"Failed retry without APOC: {e2}")
-                    return {"success": False, "error": str(e2)}
             return {"success": False, "error": str(e)}
 
     @activity.defn
@@ -217,7 +196,9 @@ class GraphActivities:
         edges = payload.get("edges_created", 0)
         error_msg = payload.get("error_message")
         
-        from ks.domain.models import GraphRun
+        from ks.domain.models import GraphRun, DocumentRegistry
+        from ks.domain.enums import DocumentStatus
+
         async with SessionLocal() as session:
             res = await session.execute(select(GraphRun).where(GraphRun.id == run_id))
             run = res.scalar_one_or_none()
@@ -228,5 +209,13 @@ class GraphActivities:
                 run.edges_created = edges
                 if error_msg:
                     run.error_message = error_msg
+                
+                # CRITICAL MISSING LINK: Update the overarching Document state to final state 'INDEXED'
+                if status == RunStatus.COMPLETED:
+                    doc_res = await session.execute(select(DocumentRegistry).where(DocumentRegistry.id == run.document_id))
+                    doc = doc_res.scalar_one_or_none()
+                    if doc:
+                        logger.info(f"FINALIZING DOCUMENT FLOW: Setting {doc.id} to INDEXED")
+                        doc.status = DocumentStatus.INDEXED
             
             await session.commit()

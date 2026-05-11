@@ -56,8 +56,8 @@ class LibraryService:
             query = query.where(search_vector.op('@@')(search_query))
             query = query.order_by(total_score.desc())
         else:
-            # Default sorting by creation date and richness
-            query = query.order_by(DocumentRegistry.created_at.desc(), fact_count_q.desc())
+            # Default sorting by LAST UPDATE date and richness so recently processed items float to top
+            query = query.order_by(DocumentRegistry.updated_at.desc(), fact_count_q.desc())
 
         query = query.limit(limit).offset(offset)
         

@@ -73,6 +73,7 @@ class CandidateDocumentResponse(BaseModel):
     decision: DiscoveryDecision
     matched_terms: list[str]
     evaluated_at: datetime
+    document_status: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -85,4 +86,6 @@ class PaginatedCandidateResponse(BaseModel):
 
 
 class DiscoveryRunDetailResponse(DiscoveryRunResponse):
+    source_scope: dict | None = None
+    framework_scope: dict | None = None
     candidates: list[CandidateDocumentResponse] = Field(default_factory=list)

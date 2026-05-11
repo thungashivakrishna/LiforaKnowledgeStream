@@ -22,6 +22,27 @@ class EnrichmentActivities:
         self.minio_client = minio_client
         self.settings = get_settings()
 
+    def _fetch_text_from_payload(self, payload: dict) -> str:
+        """Internal helper to fetch text from local memory or directly from MinIO."""
+        if "text" in payload and payload["text"]:
+            return payload["text"]
+            
+        if "extracted_text_key" in payload:
+            key = payload["extracted_text_key"]
+            bucket = self.settings.minio.bucket_extracted
+            logger.info(f"JIT Hydration: Fetching text from MinIO: {bucket}/{key}")
+            try:
+                resp = self.minio_client.get_object(bucket, key)
+                text = resp.read().decode("utf-8")
+                resp.close()
+                resp.release_conn()
+                return text
+            except Exception as e:
+                logger.error(f"JIT Hydration failed for {key}: {e}")
+                raise ValueError(f"Failed to load extracted text artifact: {str(e)}")
+                
+        raise ValueError("Neither 'text' nor 'extracted_text_key' present in enrichment payload.")
+
     @activity.defn
     async def fetch_extracted_text(self, payload: dict) -> dict:
         """
@@ -53,9 +74,14 @@ class EnrichmentActivities:
     async def detect_relevant_frameworks(self, payload: dict) -> dict:
         """
         Identifies which high-level scientific frameworks are present in the content.
-        Payload: text, model
+        Payload: text OR extracted_text_key, model
         """
-        text = payload["text"][:10000]
+        try:
+            raw_text = self._fetch_text_from_payload(payload)
+            text = raw_text[:10000]
+        except Exception as e:
+            return {"success": False, "frameworks": ["PREVENTIVE_MEDICINE"], "error": f"Text fetch failed: {e}"}
+            
         model = payload.get("model", self.settings.model.primary_model)
         
         prompt = f"""
@@ -65,6 +91,8 @@ class EnrichmentActivities:
         - PHYSICAL_ACTIVITY_SCIENCE (Exercise, biomechanics, gym, recovery, cardio)
         - HOLISTIC_TRADITIONAL_SYSTEMS (Herbs, TCM, Ayurveda, adaptogens, traditional systems)
         - PREVENTIVE_MEDICINE (Screening, lab benchmarks, disease avoidance)
+        - DIAGNOSTICS_AND_LABS (Blood tests, biomarkers, reference ranges, clinical imaging)
+        - PHARMACOLOGY_MEDICINE (Prescription drugs, dosages, mechanisms, side effects, drug-drug interactions)
         
         Return valid JSON in this strict format:
         {{"frameworks": ["FRAMEWORK_NAME_1", "FRAMEWORK_NAME_2"]}}
@@ -97,9 +125,13 @@ class EnrichmentActivities:
     async def run_llm_enrichment(self, payload: dict) -> dict:
         """
         Calls litellm to parse the text and return structured JSON based on LLMEnrichmentOutput schema.
-        Payload keys: text, model
+        Payload keys: text OR extracted_text_key, model, framework
         """
-        text = payload["text"]
+        try:
+            text = self._fetch_text_from_payload(payload)
+        except Exception as e:
+            return {"success": False, "error": f"Payload hydration failed: {e}"}
+            
         model = payload.get("model", self.settings.model.primary_model)
         
         # Truncate text to avoid overloading prompt context
@@ -158,6 +190,23 @@ class EnrichmentActivities:
             - ADAPTOGENS & HERBS: Herbal classification, tonic effects.
             - GUT-BRAIN AXIS: Microbiome, digestive fire, or systemic connection.
             - CONSTITUTIONAL EFFECTS: Warming/cooling properties or systemic balance impacts.
+            """
+        elif framework == "DIAGNOSTICS_AND_LABS":
+            framework_context = """
+            SPECIALIZED DIAGNOSTIC & LAB AGENT ACTIVE:
+            Focus on:
+            - REFERENCE INTERVALS: Normal bounds, optimal vs sub-optimal tiers, and panic values.
+            - TEST METHODOLOGY: Fasting required, imaging modalities (MRI, CT, Ultrasound), measurement units.
+            - CLINICAL SIGNIFICANCE: What elevated/suppressed levels indicate (e.g., High TSH = Hypothyroidism).
+            """
+        elif framework == "PHARMACOLOGY_MEDICINE":
+            framework_context = """
+            SPECIALIZED PHARMACOLOGICAL AGENT ACTIVE:
+            Focus on:
+            - MECHANISM OF ACTION: Agonist/Antagonist relationships, biological pathways.
+            - THERAPEUTIC INDEX: Dosage safety margin, half-life, pharmacokinetics.
+            - ADVERSE REACTIONS: Common side effects versus severe toxicity warnings.
+            - CONTRAINDICATIONS: Absolute and relative restrictions based on comorbidities.
             """
 
         prompt = f"""
@@ -398,5 +447,14 @@ class EnrichmentActivities:
                     run.total_tokens = total_tokens
                 if error_msg:
                     run.error_message = error_msg
+                
+                # CRITICAL STATE PROPAGATION
+                if status == RunStatus.COMPLETED:
+                    from ks.domain.models import DocumentRegistry
+                    from ks.domain.enums import DocumentStatus
+                    doc_res = await session.execute(select(DocumentRegistry).where(DocumentRegistry.id == run.document_id))
+                    doc = doc_res.scalar_one_or_none()
+                    if doc:
+                        doc.status = DocumentStatus.ENRICHED
             
             await session.commit()

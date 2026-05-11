@@ -27,137 +27,106 @@ class ExtractionActivities:
         self.settings = get_settings()
 
     @activity.defn
-    async def fetch_raw_artifact(self, payload: dict) -> dict:
+    async def perform_full_extraction(self, payload: dict) -> dict:
         """
-        Fetches the raw artifact from MinIO.
-        Payload keys: raw_object_key
+        Unified Extraction Pipeline: Downloads raw content, extracts text, and uploads text in one step.
+        Guarantees massive binary files never transit through Temporal gRPC workflow history.
+        Payload keys: raw_object_key, use_ocr (bool), use_llm (bool)
         """
-        object_key = payload["raw_object_key"]
-        bucket = self.settings.minio.bucket_raw
+        raw_object_key = payload["raw_object_key"]
+        use_ocr = payload.get("use_ocr", False)
+        use_llm = payload.get("use_llm", False)
         
-        logger.info(f"Fetching raw artifact from MinIO: {bucket}/{object_key}")
+        raw_bucket = self.settings.minio.bucket_raw
+        ext_bucket = self.settings.minio.bucket_extracted
+        
+        logger.info(f"Executing integrated extraction for: {raw_bucket}/{raw_object_key}")
         
         try:
-            response = self.minio_client.get_object(bucket, object_key)
+            # 1. Fetch locally
+            response = self.minio_client.get_object(raw_bucket, raw_object_key)
             content = response.read()
             response.close()
             response.release_conn()
             
-            return {
-                "object_key": object_key,
-                "content": content,
-                "success": True
-            }
-        except Exception as e:
-            logger.error(f"Failed to fetch artifact {object_key}: {e}")
-            return {"success": False, "error": str(e)}
-
-    @activity.defn
-    async def extract_text(self, payload: dict) -> dict:
-        """
-        Extracts text from raw content (HTML/PDF/Image) using standard libs, OCR, or LLM.
-        Payload keys: object_key, content (bytes), use_ocr (bool), use_llm (bool)
-        """
-        object_key = payload["object_key"]
-        content = payload["content"]
-        
-        # Temporal JSON converter might turn bytes into a list of ints
-        if isinstance(content, list):
-            content = bytes(content)
-        use_ocr = payload.get("use_ocr", False)
-        use_llm = payload.get("use_llm", False)
-        
-        ext = object_key.split(".")[-1].lower() if "." in object_key else ""
-        extracted_text = ""
-        quality = ExtractionQuality.HIGH
-        
-        try:
+            # 2. Extract locally
+            ext = raw_object_key.split(".")[-1].lower() if "." in raw_object_key else ""
+            extracted_text = ""
+            quality = ExtractionQuality.HIGH
+            
             if ext == "html" or ext == "htm":
                 soup = BeautifulSoup(content, "lxml")
-                # Remove scripts and styles
                 for script in soup(["script", "style", "nav", "footer", "header"]):
                     script.extract()
                 extracted_text = soup.get_text(separator="\n", strip=True)
                 
             elif ext == "pdf":
-                # First try pdfminer
                 pdf_io = io.BytesIO(content)
-                extracted_text = pdfminer.high_level.extract_text(pdf_io)
-                
-                # If text is very short, it might be a scanned PDF. Fallback to OCR if requested.
+                try:
+                    extracted_text = pdfminer.high_level.extract_text(pdf_io)
+                except Exception as e:
+                    logger.error(f"PDFminer failed, fall back to direct string: {e}")
+                    extracted_text = ""
                 if len(extracted_text.strip()) < 50 and use_ocr:
-                    logger.info(f"PDF text extraction yielded little text. OCR not yet fully implemented for PDF pages in this prototype.")
                     quality = ExtractionQuality.LOW
                 
             elif ext in ["png", "jpg", "jpeg"] and use_ocr:
                 img = Image.open(io.BytesIO(content))
                 extracted_text = pytesseract.image_to_string(img)
                 quality = ExtractionQuality.MEDIUM
-                
             else:
-                extracted_text = content.decode("utf-8", errors="ignore")
+                try:
+                    extracted_text = content.decode("utf-8", errors="ignore")
+                except:
+                    extracted_text = "[Binary Content Cannot Be Extracted]"
                 quality = ExtractionQuality.LOW
 
-            # LLM Layout Parsing enhancement (if requested)
-            if use_llm and extracted_text:
-                logger.info("Enhancing extraction with LLM Layout Parsing...")
-                # Note: litellm expects OPENAI_API_KEY or similar in environment.
-                # This is a basic structural prompt.
-                prompt = f"Please read the following raw text and restructure it into clean Markdown, preserving headers, lists, and paragraphs. Do not add any new information. \n\nRaw Text:\n{extracted_text[:4000]}" # Truncate for prototype to save context window
-                try:
-                    response = litellm.completion(
-                        model="gpt-3.5-turbo", # Default fallback model, configure as needed
-                        messages=[{"role": "user", "content": prompt}],
-                    )
-                    extracted_text = response.choices[0].message.content
-                    quality = ExtractionQuality.HIGH
-                except Exception as e:
-                    logger.warning(f"LLM extraction failed, falling back to raw extracted text: {e}")
-                    quality = ExtractionQuality.MEDIUM
+            # Clean and trim
+            if not extracted_text:
+                extracted_text = "No extractable text found."
 
+            # 3. LLM Enhancement (Optional - note using deeper model if specified but fallback to deepseek logic is in enrichment usually)
+            if use_llm and len(extracted_text) > 10:
+                try:
+                    prompt = f"Read this raw text and convert into clean markdown with headers.\n\nRaw Text:\n{extracted_text[:3000]}"
+                    resp = litellm.completion(
+                        model="deepseek/deepseek-chat",
+                        messages=[{"role": "user", "content": prompt}],
+                        api_key=self.settings.model.primary_api_key
+                    )
+                    extracted_text = resp.choices[0].message.content
+                except Exception as e:
+                    logger.warning(f"LLM inline enhancement failed: {e}")
+
+            # 4. Upload Extracted Text locally
+            if "." in raw_object_key:
+                new_key = raw_object_key.rsplit(".", 1)[0] + ".txt"
+            else:
+                new_key = raw_object_key + ".txt"
+                
+            if not self.minio_client.bucket_exists(ext_bucket):
+                self.minio_client.make_bucket(ext_bucket)
+                
+            text_bytes = extracted_text.encode("utf-8")
+            self.minio_client.put_object(
+                ext_bucket,
+                new_key,
+                io.BytesIO(text_bytes),
+                length=len(text_bytes),
+                content_type="text/plain"
+            )
+            
+            logger.info(f"Successfully stored unified extraction target: {new_key}")
+            
             return {
                 "success": True,
-                "extracted_text": extracted_text,
-                "quality": quality.value
+                "extracted_object_key": new_key,
+                "quality": quality.value,
+                "text_preview": extracted_text[:2000] # Send safe chunk back to workflow for inspection if needed
             }
         except Exception as e:
-            logger.error(f"Failed to extract text: {e}")
+            logger.exception(f"Extraction localized process failure: {e}")
             return {"success": False, "error": str(e)}
-
-    @activity.defn
-    async def store_extracted_artifact(self, payload: dict) -> str:
-        """
-        Stores the extracted text in MinIO.
-        Payload keys: object_key, extracted_text
-        """
-        orig_key = payload["object_key"]
-        extracted_text = payload["extracted_text"]
-        
-        # New key: doc_id/hash.txt
-        # Replace original extension with .txt
-        if "." in orig_key:
-            new_key = orig_key.rsplit(".", 1)[0] + ".txt"
-        else:
-            new_key = orig_key + ".txt"
-            
-        bucket = self.settings.minio.bucket_extracted
-        logger.info(f"Storing extracted artifact in MinIO: {bucket}/{new_key}")
-        
-        if not self.minio_client.bucket_exists(bucket):
-            self.minio_client.make_bucket(bucket)
-            
-        text_bytes = extracted_text.encode("utf-8")
-        content_file = io.BytesIO(text_bytes)
-        
-        self.minio_client.put_object(
-            bucket,
-            new_key,
-            content_file,
-            length=len(text_bytes),
-            content_type="text/plain"
-        )
-        
-        return new_key
 
     @activity.defn
     async def update_extraction_status(self, payload: dict) -> None:
@@ -187,6 +156,8 @@ class ExtractionActivities:
                     doc_res = await session.execute(select(DocumentRegistry).where(DocumentRegistry.id == run.document_id))
                     doc = doc_res.scalar_one_or_none()
                     if doc:
+                        from ks.domain.enums import DocumentStatus
                         doc.extracted_text_key = payload["extracted_object_key"]
+                        doc.status = DocumentStatus.EXTRACTED # Propagate forward state
             
             await session.commit()

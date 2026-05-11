@@ -39,6 +39,7 @@ class LibraryDocumentListResponse(BaseModel):
     source_name: str | None = None
     source_type: str | None = None
     created_at: datetime
+    updated_at: datetime
     
     # We can include a short summary and tags in the list view
     summary_preview: str | None = None

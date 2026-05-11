@@ -29,29 +29,13 @@ class EnrichmentWorkflow:
         if not extracted_text_key:
              return {"status": "FAILED", "error": "extracted_text_key missing in payload"}
              
-        # 2. Fetch Extracted Text
-        fetch_result = await workflow.execute_activity(
-            "fetch_extracted_text",
-            {"extracted_object_key": extracted_text_key},
-            start_to_close_timeout=timedelta(minutes=5),
-        )
-        
-        if not fetch_result["success"]:
-            await workflow.execute_activity(
-                "update_enrichment_status",
-                {
-                    "run_id": run_id,
-                    "status": RunStatus.FAILED.value,
-                    "error_message": fetch_result["error"]
-                },
-                start_to_close_timeout=timedelta(seconds=30),
-            )
-            return {"status": "FAILED", "error": fetch_result["error"]}
+        # No longer need to fetch full text into workflow history! 
+        # We stream it directly inside the activities.
             
         # 3. Detect Relevant Frameworks dynamically (using fast model)
         detect_result = await workflow.execute_activity(
             "detect_relevant_frameworks",
-            {"text": fetch_result["text"], "model": "gpt-4o-mini"},
+            {"extracted_text_key": extracted_text_key, "model": "gpt-4o-mini"},
             start_to_close_timeout=timedelta(minutes=2),
         )
         detected = detect_result.get("frameworks", ["PREVENTIVE_MEDICINE"])
@@ -72,7 +56,7 @@ class EnrichmentWorkflow:
         
         async def run_agent_for_framework(fw: str):
             p = {
-                "text": fetch_result["text"],
+                "extracted_text_key": extracted_text_key,
                 "model": model, # Begins with DeepSeek
                 "source_type": payload.get("source_type"),
                 "framework": fw
@@ -113,8 +97,15 @@ class EnrichmentWorkflow:
                 
             return fw, res
 
-        agent_tasks = [run_agent_for_framework(fw) for fw in frameworks]
-        agent_results = await asyncio.gather(*agent_tasks, return_exceptions=True)
+        # Run multi-perspective extraction agents sequentially to reduce deadlock starvation risk
+        agent_results = []
+        for fw in frameworks:
+            try:
+                res = await run_agent_for_framework(fw)
+                agent_results.append(res)
+            except Exception as e:
+                workflow.logger.error(f"Framework agent {fw} crashed: {e}")
+                agent_results.append((fw, {"success": False, "error": str(e)}))
         
         # 5. Intelligently Merge Parallel Knowledge
         merged_enrichment = {

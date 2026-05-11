@@ -46,10 +46,11 @@ class AcquisitionActivities:
         Criteria:
         - HIGH VALUE: Detailed clinical guidelines, specific medication dosages (e.g., 500mg), nutrient stats, symptoms, or treatment protocols.
         - LOW VALUE / INDEX: Lists of links, search results, directory pages, or shallow boilerplate.
+        - ENGLISH ONLY: Reject immediately if the primary content language is not English.
         
         Task:
-        1. Decide if high_value (bool).
-        2. Provide reason (string).
+        1. Decide if high_value (bool). MUST be false if the content is not in English.
+        2. Provide reason (string). Mention 'Non-English Content' if rejected for language.
         3. If LOW VALUE but has promising links, list up to 5 absolute URLs to follow.
         4. If HIGH VALUE, extract top 3 key facts as S-P-O triples (subject, predicate, object).
         
@@ -117,7 +118,6 @@ class AcquisitionActivities:
             elif "pdf" in content_type:
                 try:
                     from pdfminer.high_level import extract_text
-                    import io
                     pdf_file = io.BytesIO(content)
                     text = extract_text(pdf_file)
                     
@@ -135,7 +135,6 @@ class AcquisitionActivities:
                 try:
                     import pytesseract
                     from PIL import Image
-                    import io
                     img = Image.open(io.BytesIO(content))
                     text = pytesseract.image_to_string(img)
                     logger.info(f"Successfully ran OCR Vision Intake on image {doc_id}")

@@ -111,6 +111,19 @@ const Discovery = () => {
     }
   };
 
+  const handleStopAll = async () => {
+    const active = runs.filter(r => r.status === 'RUNNING');
+    if (active.length === 0) return;
+    if (!window.confirm(`Terminate ALL ${active.length} currently running extraction sequences?`)) return;
+    
+    try {
+      await Promise.all(active.map(r => axios.delete(`${API_BASE}/discovery/runs/${r.id}`)));
+      fetchRuns();
+    } catch (err) {
+       console.error('Batch stop failed', err);
+    }
+  };
+
   const toggleRunDetails = async (runId) => {
     if (expandedRunId === runId) {
       setExpandedRunId(null);
@@ -189,7 +202,18 @@ const Discovery = () => {
               </div>
 
               <div>
-                <label className="block text-xs font-black tracking-widest uppercase text-slate-500 mb-2">Filter by Source</label>
+                <div className="flex justify-between items-center mb-2">
+                  <label className="block text-xs font-black tracking-widest uppercase text-slate-500">Filter by Source</label>
+                  <button 
+                    onClick={() => {
+                       if (selectedSources.length === sources.length) setSelectedSources([]);
+                       else setSelectedSources(sources.map(s => s.id));
+                    }}
+                    className="text-[9px] font-bold text-brand-400 hover:text-brand-300 uppercase tracking-wider px-2 py-0.5 bg-slate-900 border border-slate-800 rounded hover:border-brand-500/50 transition-all"
+                  >
+                    {selectedSources.length === sources.length ? 'Deselect All' : 'Select All'}
+                  </button>
+                </div>
                 <div className="max-h-40 overflow-y-auto custom-scrollbar bg-slate-950 border border-slate-800 rounded-xl p-2 space-y-1">
                   {sources.map((src) => (
                     <label 
@@ -219,14 +243,28 @@ const Discovery = () => {
               </div>
 
               <div>
-                <label className="block text-xs font-black tracking-widest uppercase text-slate-500 mb-2">Target Framework Agents</label>
+                <div className="flex justify-between items-center mb-2">
+                  <label className="block text-xs font-black tracking-widest uppercase text-slate-500">Target Framework Agents</label>
+                  <button 
+                    onClick={() => {
+                       const allFws = ['NUTRITION_SCIENCE', 'PHYSICAL_ACTIVITY_SCIENCE', 'PREVENTIVE_MEDICINE', 'HOLISTIC_TRADITIONAL_SYSTEMS', 'EVIDENCE_BASED_WESTERN_MEDICINE', 'DIAGNOSTICS_AND_LABS', 'PHARMACOLOGY_MEDICINE'];
+                       if (selectedFrameworks.length === 7) setSelectedFrameworks([]);
+                       else setSelectedFrameworks(allFws);
+                    }}
+                    className="text-[9px] font-bold text-emerald-400 hover:text-emerald-300 uppercase tracking-wider px-2 py-0.5 bg-slate-900 border border-slate-800 rounded hover:border-emerald-500/50 transition-all"
+                  >
+                    {selectedFrameworks.length === 7 ? 'Deselect All' : 'Select All'}
+                  </button>
+                </div>
                 <div className="bg-slate-950 border border-slate-800 rounded-xl p-2 space-y-1">
                   {[
                     {id: 'NUTRITION_SCIENCE', name: 'Nutrition Science'},
                     {id: 'PHYSICAL_ACTIVITY_SCIENCE', name: 'Physical Activity'},
                     {id: 'PREVENTIVE_MEDICINE', name: 'Preventive Medicine'},
                     {id: 'HOLISTIC_TRADITIONAL_SYSTEMS', name: 'Holistic Systems'},
-                    {id: 'EVIDENCE_BASED_WESTERN_MEDICINE', name: 'Western Evidence'}
+                    {id: 'EVIDENCE_BASED_WESTERN_MEDICINE', name: 'Western Evidence'},
+                    {id: 'DIAGNOSTICS_AND_LABS', name: 'Diagnostics & Lab Testing'},
+                    {id: 'PHARMACOLOGY_MEDICINE', name: 'Pharmacology & Medicine'}
                   ].map((fw) => (
                     <label 
                       key={fw.id} 
@@ -323,6 +361,15 @@ const Discovery = () => {
                 <Globe className="w-4 h-4 text-brand-400" />
                 Extraction Ticker & Pipeline State
               </h3>
+              {runs.some(r => r.status === 'RUNNING') && (
+                <button 
+                  onClick={handleStopAll}
+                  className="flex items-center gap-2 text-[10px] font-black uppercase tracking-widest bg-rose-500/10 text-rose-400 border border-rose-500/30 hover:bg-rose-500/20 px-3 py-1.5 rounded-lg transition-all shadow-lg"
+                >
+                  <ShieldAlert className="w-3 h-3" />
+                  Stop All Active
+                </button>
+              )}
             </div>
             <div className="flex-1 overflow-x-auto">
               <table className="w-full text-left border-collapse">
@@ -403,8 +450,35 @@ const Discovery = () => {
                                 Loading extraction details...
                               </div>
                             ) : (
-                              <div className="space-y-3">
-                                <h4 className="text-xs font-bold uppercase tracking-widest text-slate-400">Processed Items & Status</h4>
+                              <div className="space-y-4">
+                                <div className="grid grid-cols-2 gap-4 border border-slate-800 bg-slate-900/40 p-3 rounded-lg">
+                                  <div>
+                                     <p className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-1">Source Constraints</p>
+                                     <div className="flex flex-wrap gap-1">
+                                       {(!runDetails.source_scope?.source_ids || runDetails.source_scope.source_ids.length === 0) ? (
+                                          <span className="text-xs text-slate-400 px-2 bg-slate-800 rounded">Global Sweep</span>
+                                       ) : runDetails.source_scope.source_ids.map(id => (
+                                          <span key={id} className="text-[10px] bg-indigo-500/10 text-indigo-300 border border-indigo-500/20 px-2 py-0.5 rounded">
+                                            {sources.find(s => s.id === id)?.name || 'Target Source'}
+                                          </span>
+                                       ))}
+                                     </div>
+                                  </div>
+                                  <div>
+                                     <p className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-1">Active Agents</p>
+                                     <div className="flex flex-wrap gap-1">
+                                       {(!runDetails.framework_scope?.frameworks || runDetails.framework_scope.frameworks.length === 0) ? (
+                                          <span className="text-xs text-emerald-400 px-2 bg-emerald-500/10 border border-emerald-500/20 rounded">Dynamic Detection</span>
+                                       ) : runDetails.framework_scope.frameworks.map(fw => (
+                                          <span key={fw} className="text-[10px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded">
+                                            {fw.replace(/_/g, ' ')}
+                                          </span>
+                                       ))}
+                                     </div>
+                                  </div>
+                                </div>
+
+                                <h4 className="text-xs font-bold uppercase tracking-widest text-slate-400 mt-2">Processed Items & Status</h4>
                                 {(!runDetails?.candidates || runDetails.candidates.length === 0) ? (
                                   <p className="text-xs text-slate-600 italic">No candidates recorded yet for this run.</p>
                                 ) : (
@@ -414,7 +488,8 @@ const Discovery = () => {
                                         <tr>
                                           <th className="px-3 py-2">Decision</th>
                                           <th className="px-3 py-2">Target URL / Title</th>
-                                          <th className="px-3 py-2 text-right">Evaluation Score</th>
+                                          <th className="px-3 py-2">Extraction Status</th>
+                                          <th className="px-3 py-2 text-right">Score</th>
                                         </tr>
                                       </thead>
                                       <tbody className="divide-y divide-slate-800/50">
@@ -423,15 +498,25 @@ const Discovery = () => {
                                             <td className="px-3 py-2">
                                               <span className={clsx(
                                                 "px-1.5 py-0.5 rounded font-bold uppercase text-[9px]",
-                                                c.decision === 'INGEST_NOW' ? "bg-emerald-500/10 text-emerald-400" : "bg-slate-800 text-slate-500"
+                                                c.decision === 'INGEST_NOW' ? "bg-blue-500/10 border border-blue-500/20 text-blue-400" : "bg-slate-800 text-slate-500"
                                               )}>{c.decision}</span>
                                             </td>
                                             <td className="px-3 py-2 max-w-md truncate">
-                                              <span className="block text-slate-200 font-semibold truncate">{c.title || "Untitled"}</span>
+                                              <span className="block text-slate-200 font-semibold truncate">{c.title || "Untitled Document"}</span>
                                               <span className="block text-[9px] text-slate-500 truncate">{c.canonical_url}</span>
                                             </td>
+                                            <td className="px-3 py-2">
+                                              <span className={clsx(
+                                                "inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-black uppercase tracking-widest border",
+                                                ['FETCHED', 'EXTRACTED', 'ENRICHED', 'COMPLETED'].includes(c.document_status) ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/20" :
+                                                c.document_status === 'FAILED' || c.document_status === 'REJECTED' ? "bg-rose-500/10 text-rose-400 border-rose-500/20" :
+                                                "bg-slate-800 text-slate-400 border-slate-700"
+                                              )}>
+                                                {c.document_status || 'QUEUED'}
+                                              </span>
+                                            </td>
                                             <td className="px-3 py-2 text-right font-mono text-slate-300 font-bold">
-                                              {(c.score * 100).toFixed(0)}%
+                                              {c.score ? `${(c.score * 100).toFixed(0)}%` : '--'}
                                             </td>
                                           </tr>
                                         ))}

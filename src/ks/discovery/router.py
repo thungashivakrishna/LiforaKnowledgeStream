@@ -93,6 +93,8 @@ async def get_discovery_run(run_id: uuid.UUID, db: AsyncSession = Depends(get_db
             "candidate_count": run.candidate_count,
             "error_message": run.error_message,
             "created_at": run.created_at,
+            "source_scope": run.source_scope,
+            "framework_scope": run.framework_scope,
             "candidates": [
                 {
                     "id": c.id,
@@ -104,6 +106,7 @@ async def get_discovery_run(run_id: uuid.UUID, db: AsyncSession = Depends(get_db
                     "decision": c.decision,
                     "matched_terms": c.matched_terms,
                     "evaluated_at": c.evaluated_at,
+                    "document_status": c.document.status.value if c.document.status else "UNKNOWN"
                 } for c in candidates
             ]
         }
