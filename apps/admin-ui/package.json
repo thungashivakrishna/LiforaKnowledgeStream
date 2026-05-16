@@ -10,6 +10,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@tailwindcss/typography": "^0.5.19",
     "axios": "^1.6.8",
     "clsx": "^2.1.1",
     "d3": "^7.9.0",
@@ -20,11 +21,13 @@
     "react-dom": "^18.3.1",
     "react-force-graph": "^1.48.2",
     "react-force-graph-2d": "^1.29.1",
+    "react-markdown": "^10.1.0",
     "react-router-dom": "^6.23.1",
     "recharts": "^3.8.1",
     "tailwind-merge": "^2.3.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.60.0",
     "@types/react": "^18.3.1",
     "@types/react-dom": "^18.3.1",
     "@vitejs/plugin-react": "^4.2.1",

@@ -4,7 +4,7 @@ from typing import Any
 
 from sqlalchemy import (
     BigInteger, Boolean, Date, DateTime, Enum, Float,
-    ForeignKey, Index, Integer, String, Text, func,
+    ForeignKey, Index, Integer, String, Text, func, UniqueConstraint
 )
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -121,6 +121,9 @@ class DocumentRegistry(Base):
     status: Mapped[DocumentStatus] = mapped_column(
         Enum(DocumentStatus), default=DocumentStatus.DISCOVERED
     )
+    priority_score: Mapped[float | None] = mapped_column(Float)
+    metadata_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+    evaluation_metrics: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     publication_date: Mapped[date | None] = mapped_column(Date)
     author: Mapped[str | None] = mapped_column(Text)
     language: Mapped[str] = mapped_column(String(10), default="en")
@@ -317,9 +320,23 @@ class KnowledgeFact(Base):
     validation_status: Mapped[ValidationStatus] = mapped_column(
         Enum(ValidationStatus), default=ValidationStatus.PENDING
     )
+    is_hallucination: Mapped[bool] = mapped_column(Boolean, default=False)
+    critique: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     document: Mapped["DocumentRegistry"] = relationship(back_populates="facts")
+    
+    @property
+    def object(self) -> str | None:
+        return self.object_
+        
+    @object.setter
+    def object(self, value: str | None):
+        self.object_ = value
+
+    __table_args__ = (
+        UniqueConstraint('document_id', 'subject', 'predicate', 'object', name='uq_knowledge_fact_content'),
+    )
 
 
 class KnowledgeTag(Base):
@@ -335,7 +352,10 @@ class KnowledgeTag(Base):
 
     document: Mapped["DocumentRegistry"] = relationship(back_populates="tags")
 
-    __table_args__ = (Index("ix_knowledge_tag_document_id", "document_id"),)
+    __table_args__ = (
+        UniqueConstraint('document_id', 'tag_type', 'tag_value', name='uq_knowledge_tag_content'),
+        Index("ix_knowledge_tag_document_id", "document_id"),
+    )
 
 
 # ── Graph Prototype ───────────────────────────────────────────────────────────

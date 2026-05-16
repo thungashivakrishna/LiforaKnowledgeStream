@@ -57,3 +57,82 @@ class ExtractionWorkflow:
         )
         
         return {"status": "COMPLETED", "extracted_object_key": result["extracted_object_key"]}
+@workflow.defn
+class RecursiveExtractionWorkflow:
+    @workflow.run
+    async def run(self, payload: dict) -> dict:
+        """
+        Robust Extraction Workflow: Handles long documents by chunking and map-reducing.
+        Payload keys: run_id, document_id, raw_object_key, use_ocr
+        """
+        run_id = payload["run_id"]
+        raw_object_key = payload["raw_object_key"]
+        
+        # 1. Perform Raw Extraction
+        raw_result = await workflow.execute_activity(
+            "perform_full_extraction",
+            {
+                "raw_object_key": raw_object_key,
+                "use_ocr": payload.get("use_ocr", False),
+                "use_llm": False # We handle LLM logic recursively below
+            },
+            start_to_close_timeout=timedelta(minutes=15),
+        )
+        
+        if not raw_result["success"]:
+            await workflow.execute_activity(
+                "update_extraction_status",
+                {"run_id": run_id, "status": RunStatus.FAILED.value, "error_message": raw_result.get("error")},
+                start_to_close_timeout=timedelta(seconds=30),
+            )
+            return {"status": "FAILED", "error": raw_result.get("error")}
+
+        extracted_key = raw_result["extracted_object_key"]
+        
+        # 2. Chunk the text
+        chunk_result = await workflow.execute_activity(
+            "chunk_extracted_text",
+            {"extracted_object_key": extracted_key},
+            start_to_close_timeout=timedelta(minutes=5),
+        )
+        
+        if not chunk_result["success"]:
+            return {"status": "FAILED", "error": "Chunking failed"}
+
+        chunks = chunk_result["chunks"]
+        
+        # 3. Enhance chunks (Map step)
+        enhanced_chunks = []
+        for i, chunk in enumerate(chunks):
+            # In Phase 1, we do this sequentially for simplicity, but could be parallelized
+            res = await workflow.execute_activity(
+                "enhance_text_chunk",
+                {"chunk_text": chunk, "chunk_index": i},
+                start_to_close_timeout=timedelta(minutes=5),
+            )
+            if res["success"]:
+                enhanced_chunks.append(res)
+        
+        # 4. Merge results (Reduce step)
+        merge_result = await workflow.execute_activity(
+            "merge_enhanced_chunks",
+            {"chunks": enhanced_chunks, "original_key": extracted_key},
+            start_to_close_timeout=timedelta(minutes=5),
+        )
+        
+        if not merge_result["success"]:
+            return {"status": "FAILED", "error": "Merging failed"}
+
+        # 5. Final Status Update
+        await workflow.execute_activity(
+            "update_extraction_status",
+            {
+                "run_id": run_id,
+                "status": RunStatus.COMPLETED.value,
+                "quality": raw_result["quality"],
+                "extracted_object_key": merge_result["object_key"]
+            },
+            start_to_close_timeout=timedelta(seconds=30),
+        )
+        
+        return {"status": "COMPLETED", "extracted_object_key": merge_result["object_key"]}

@@ -35,13 +35,18 @@ const Dashboard = () => {
   
   // Model token usage comparison
   const modelStats = completedRuns.reduce((acc, run) => {
-    const model = run.model_used || 'unknown';
-    if (!acc[model]) {
-      acc[model] = { name: model, count: 0, totalTokens: 0, avgTokens: 0 };
+    let model = run.model_used || 'unknown';
+    // Normalize model names for aggregation
+    let key = model;
+    if (model.toLowerCase().includes('deepseek')) key = 'deepseek/deepseek-chat';
+    if (model.toLowerCase().includes('gpt-4o')) key = 'gpt-4o-mini';
+    
+    if (!acc[key]) {
+      acc[key] = { name: key, count: 0, totalTokens: 0, avgTokens: 0 };
     }
-    acc[model].count += 1;
-    acc[model].totalTokens += (run.total_tokens || 0);
-    acc[model].avgTokens = Math.round(acc[model].totalTokens / acc[model].count);
+    acc[key].count += 1;
+    acc[key].totalTokens += (run.total_tokens || 0);
+    acc[key].avgTokens = Math.round(acc[key].totalTokens / acc[key].count);
     return acc;
   }, {});
   

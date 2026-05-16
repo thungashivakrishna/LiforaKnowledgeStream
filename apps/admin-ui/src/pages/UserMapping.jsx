@@ -3,6 +3,8 @@ import axios from 'axios';
 import { UserCircle, Heart, Target, AlertTriangle, Play, FileText, ChevronRight, CheckCircle2 } from 'lucide-react';
 import { clsx } from 'clsx';
 
+const API_BASE = '/api/v1';
+
 const UserMapping = () => {
   const [profile, setProfile] = useState({
     conditions: '',
@@ -27,7 +29,7 @@ const UserMapping = () => {
     };
 
     try {
-      const response = await axios.post('/api/v1/library/personalized-protocol', payload);
+      const response = await axios.post(`${API_BASE}/library/personalized-protocol`, payload);
       setResults(response.data);
     } catch (err) {
       console.error(err);

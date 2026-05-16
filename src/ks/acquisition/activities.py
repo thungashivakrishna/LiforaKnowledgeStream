@@ -238,6 +238,17 @@ class AcquisitionActivities:
             from ks.domain.enums import ValidationStatus
             
             for f in facts:
+                # Check for existing fact to avoid violating unique constraint
+                stmt = select(KnowledgeFact).where(
+                    KnowledgeFact.document_id == doc_id,
+                    KnowledgeFact.subject == f.get("subject"),
+                    KnowledgeFact.predicate == f.get("predicate"),
+                    KnowledgeFact.object_ == f.get("object")
+                )
+                existing = await session.execute(stmt)
+                if existing.scalar_one_or_none():
+                    continue
+
                 fact = KnowledgeFact(
                     document_id=doc_id,
                     fact_text=f.get("fact_text", ""),

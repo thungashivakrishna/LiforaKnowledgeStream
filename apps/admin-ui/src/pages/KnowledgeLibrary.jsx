@@ -12,9 +12,10 @@ import {
   BrainCircuit,
   Hash,
   Share2,
-  X,
   ExternalLink,
-  Database
+  Database,
+  ChevronRight,
+  X
 } from 'lucide-react'
 import { format } from 'date-fns'
 import { clsx } from 'clsx'
@@ -25,21 +26,31 @@ const API_BASE = '/api/v1'
 
 const KnowledgeLibrary = () => {
   const [documents, setDocuments] = useState([])
+  const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
+  const [loadingMore, setLoadingMore] = useState(false)
   const [search, setSearch] = useState('')
+  const [filters, setFilters] = useState({
+    status: '',
+    framework: '',
+    source_type: ''
+  })
+  const [offset, setOffset] = useState(0)
+  const LIMIT = 24
+
   const [selectedDocId, setSelectedDocId] = useState(null)
   const [docDetails, setDocDetails] = useState(null)
   const [loadingDetails, setLoadingDetails] = useState(false)
   const [activeTab, setActiveTab] = useState('content')
 
   useEffect(() => {
-    fetchDocuments(search)
-  }, [])
+    fetchDocuments(search, filters, 0, true)
+  }, [filters])
 
   // Debounced search
   useEffect(() => {
     const timer = setTimeout(() => {
-      fetchDocuments(search)
+      fetchDocuments(search, filters, 0, true)
     }, 500)
     return () => clearTimeout(timer)
   }, [search])
@@ -50,17 +61,42 @@ const KnowledgeLibrary = () => {
     }
   }, [selectedDocId])
 
-  const fetchDocuments = async (query = '') => {
+  const fetchDocuments = async (query = '', currentFilters = {}, currentOffset = 0, reset = false) => {
     try {
-      setLoading(true)
-      const params = query ? { q: query } : {}
+      if (reset) {
+        setLoading(true)
+        setOffset(0)
+      } else {
+        setLoadingMore(true)
+      }
+
+      const params = {
+        limit: LIMIT,
+        offset: currentOffset,
+        ...currentFilters
+      }
+      if (query) params.q = query
+
       const response = await axios.get(`${API_BASE}/library/documents`, { params })
-      setDocuments(response.data.items)
+      
+      if (reset) {
+        setDocuments(response.data.items)
+      } else {
+        setDocuments(prev => [...prev, ...response.data.items])
+      }
+      setTotal(response.data.total)
     } catch (error) {
       console.error('Error fetching documents:', error)
     } finally {
       setLoading(false)
+      setLoadingMore(false)
     }
+  }
+
+  const handleLoadMore = () => {
+    const nextOffset = offset + LIMIT
+    setOffset(nextOffset)
+    fetchDocuments(search, filters, nextOffset, false)
   }
 
   const fetchDocumentDetails = async (id) => {
@@ -91,16 +127,48 @@ const KnowledgeLibrary = () => {
           </div>
         </div>
 
-        {/* Search */}
-        <div className="relative mb-6">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 w-5 h-5" />
-          <input 
-            type="text" 
-            placeholder="Search documents..." 
-            className="input-field pl-10"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
+        {/* Filters */}
+        <div className="flex flex-col md:flex-row gap-3 mb-6">
+          <div className="relative flex-grow">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 w-5 h-5" />
+            <input 
+              type="text" 
+              placeholder="Search documents..." 
+              className="input-field pl-10 w-full"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </div>
+          
+          <div className="flex gap-2">
+            <select 
+              className="bg-slate-900/50 border border-slate-800 rounded-xl px-4 py-2 text-sm text-slate-300 focus:outline-none focus:ring-1 focus:ring-brand-500"
+              value={filters.framework}
+              onChange={(e) => setFilters({...filters, framework: e.target.value})}
+            >
+              <option value="">All Frameworks</option>
+              <option value="EVIDENCE_BASED_WESTERN_MEDICINE">Western Med</option>
+              <option value="NUTRITION_SCIENCE">Nutrition</option>
+              <option value="PHYSICAL_ACTIVITY_SCIENCE">Exercise</option>
+              <option value="HOLISTIC_TRADITIONAL_SYSTEMS">Holistic</option>
+              <option value="PREVENTIVE_MEDICINE">Preventive</option>
+              <option value="DIAGNOSTICS_AND_LABS">Diagnostics</option>
+              <option value="PHARMACOLOGY_MEDICINE">Pharmacology</option>
+            </select>
+
+            <select 
+              className="bg-slate-900/50 border border-slate-800 rounded-xl px-4 py-2 text-sm text-slate-300 focus:outline-none focus:ring-1 focus:ring-brand-500"
+              value={filters.status}
+              onChange={(e) => setFilters({...filters, status: e.target.value})}
+            >
+              <option value="">All Statuses</option>
+              <option value="ENRICHED">Enriched</option>
+              <option value="FETCHED">Fetched</option>
+              <option value="DISCOVERED">Discovered</option>
+              <option value="INDEXED">Indexed</option>
+              <option value="FAILED">Failed</option>
+            </select>
+          </div>
         </div>
 
         {/* Catalog Grid/List */}
@@ -210,6 +278,28 @@ const KnowledgeLibrary = () => {
             ))
           )}
         </div>
+
+        {documents.length < total && (
+          <div className="flex justify-center mt-8 pb-12">
+            <button
+              onClick={handleLoadMore}
+              disabled={loadingMore}
+              className="glass hover:bg-brand-500/10 hover:border-brand-500 transition-all px-8 py-3 rounded-xl text-sm font-bold text-slate-300 flex items-center gap-3 group"
+            >
+              {loadingMore ? (
+                <>
+                  <div className="w-4 h-4 border-2 border-brand-500 border-t-transparent rounded-full animate-spin"></div>
+                  SYCHRONIZING...
+                </>
+              ) : (
+                <>
+                  LOAD MORE ({total - documents.length} REMAINING)
+                  <ChevronRight className="w-4 h-4 text-brand-500 group-hover:translate-x-1 transition-transform" />
+                </>
+              )}
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Right Pane: Document Details (Knowledge Graph) */}

@@ -12,6 +12,7 @@ from ks.config.settings import get_settings
 from ks.domain.enums import RunStatus, Framework, TagType, AssignedBy, ValidationStatus
 from ks.domain.models import EnrichmentRun, KnowledgeSummary, KnowledgeTag, KnowledgeFact
 from ks.enrichment.schemas import LLMEnrichmentOutput
+from ks.enrichment.normalization import EntityNormalizer
 
 
 logger = logging.getLogger(__name__)
@@ -21,6 +22,7 @@ class EnrichmentActivities:
     def __init__(self, minio_client: Minio):
         self.minio_client = minio_client
         self.settings = get_settings()
+        self.normalizer = EntityNormalizer()
 
     def _fetch_text_from_payload(self, payload: dict) -> str:
         """Internal helper to fetch text from local memory or directly from MinIO."""
@@ -320,6 +322,10 @@ class EnrichmentActivities:
         doc_id = uuid.UUID(payload["document_id"])
         enrichment = payload["enrichment"]
         model = payload["model"]
+        verification_report = payload.get("verification_report", [])
+        
+        # Index verification report by fact index for fast lookup
+        v_map = {v.get("fact_index"): v for v in verification_report}
         
         async with SessionLocal() as session:
             try:
@@ -345,36 +351,33 @@ class EnrichmentActivities:
                     session.add(summary)
                 
                 # 2. Save Tags (Frameworks and Topics)
+                async def add_tag_if_new(doc_id, t_type, t_value, is_primary=False):
+                    stmt = sa_select(KnowledgeTag).where(
+                        KnowledgeTag.document_id == doc_id,
+                        KnowledgeTag.tag_type == t_type,
+                        KnowledgeTag.tag_value == t_value
+                    )
+                    existing = await session.execute(stmt)
+                    if not existing.scalar_one_or_none():
+                        tag = KnowledgeTag(
+                            document_id=doc_id,
+                            tag_type=t_type,
+                            tag_value=t_value,
+                            is_primary=is_primary,
+                            assigned_by=AssignedBy.MODEL
+                        )
+                        session.add(tag)
+
                 primary_fw = enrichment.get("primary_framework")
                 if primary_fw:
-                    tag = KnowledgeTag(
-                        document_id=doc_id,
-                        tag_type=TagType.FRAMEWORK,
-                        tag_value=primary_fw,
-                        is_primary=True,
-                        assigned_by=AssignedBy.MODEL
-                    )
-                    session.add(tag)
+                    await add_tag_if_new(doc_id, TagType.FRAMEWORK, primary_fw, is_primary=True)
                     
                 for fw in enrichment.get("secondary_frameworks", []):
-                    tag = KnowledgeTag(
-                        document_id=doc_id,
-                        tag_type=TagType.FRAMEWORK,
-                        tag_value=fw,
-                        is_primary=False,
-                        assigned_by=AssignedBy.MODEL
-                    )
-                    session.add(tag)
+                    await add_tag_if_new(doc_id, TagType.FRAMEWORK, fw)
                     
                 for topic in enrichment.get("topics", []):
-                    tag = KnowledgeTag(
-                        document_id=doc_id,
-                        tag_type=TagType.TOPIC,
-                        tag_value=topic,
-                        is_primary=False,
-                        assigned_by=AssignedBy.MODEL
-                    )
-                    session.add(tag)
+                    await add_tag_if_new(doc_id, TagType.TOPIC, topic)
+                
                 
                 # Granular Health Tags
                 tag_mapping = {
@@ -387,26 +390,56 @@ class EnrichmentActivities:
                 
                 for key, t_type in tag_mapping.items():
                     for val in enrichment.get(key, []):
-                        tag = KnowledgeTag(
-                            document_id=doc_id,
-                            tag_type=t_type,
-                            tag_value=val,
-                            is_primary=False,
-                            assigned_by=AssignedBy.MODEL
-                        )
-                        session.add(tag)
+                        if val:
+                            await add_tag_if_new(doc_id, t_type, val)
                     
                 # 3. Save Facts
                 for fact_data in enrichment.get("facts", []):
+                    # NORMALIZE ENTITIES before dedup check and persistence
+                    raw_subject = fact_data.get("subject")
+                    raw_object = fact_data.get("object_value")
+                    
+                    norm_subject, _, norm_object = await self.normalizer.normalize_triple(
+                        raw_subject, "", raw_object
+                    )
+
+                    # Dedup Check with normalized values
+                    stmt = sa_select(KnowledgeFact).where(
+                        KnowledgeFact.document_id == doc_id,
+                        KnowledgeFact.subject == norm_subject,
+                        KnowledgeFact.predicate == fact_data.get("predicate"),
+                        KnowledgeFact.object_ == norm_object
+                    )
+                    existing_fact = await session.execute(stmt)
+                    if existing_fact.scalar_one_or_none():
+                        continue
+
+                    # AUTO-VALIDATION: If confidence is high (> 0.9), mark as VALIDATED immediately.
+                    # This reduces the manual bottleneck for high-fidelity sources.
+                    confidence = fact_data.get("confidence", 0.8)
+                    status = ValidationStatus.VALIDATED if confidence > 0.9 else ValidationStatus.PENDING
+                    
+                    # Apply verification results if available
+                    v_result = v_map.get(enrichment.get("facts", []).index(fact_data))
+                    is_hallucination = False
+                    critique = None
+                    if v_result:
+                        is_hallucination = v_result.get("is_hallucination", False)
+                        critique = v_result.get("critique")
+                        if is_hallucination:
+                            status = ValidationStatus.PENDING # Force human review
+                    
                     fact = KnowledgeFact(
                         document_id=doc_id,
                         fact_text=fact_data.get("fact_text", ""),
-                        subject=fact_data.get("subject"),
+                        subject=norm_subject,
                         predicate=fact_data.get("predicate"),
-                        object_=fact_data.get("object_value"),
-                        confidence=fact_data.get("confidence"),
+                        object_=norm_object,
+                        confidence=confidence,
                         source_span=fact_data.get("source_span"),
-                        validation_status=ValidationStatus.PENDING
+                        validation_status=status,
+                        is_hallucination=is_hallucination,
+                        critique=critique
                     )
                     session.add(fact)
                     
@@ -439,6 +472,12 @@ class EnrichmentActivities:
             if run:
                 run.status = status
                 run.completed_at = datetime.now()
+                
+                # Update model used if passed (handles fallbacks)
+                model_used = payload.get("model_used")
+                if model_used:
+                    run.model_used = model_used
+                    
                 if prompt_tokens is not None:
                     run.prompt_tokens = prompt_tokens
                 if completion_tokens is not None:
@@ -458,3 +497,34 @@ class EnrichmentActivities:
                         doc.status = DocumentStatus.ENRICHED
             
             await session.commit()
+
+    @activity.defn
+    async def verify_extraction_activity(self, payload: dict) -> dict:
+        """
+        Critic Agent: Reviews extracted facts against the source text to identify hallucinations.
+        """
+        facts = payload["facts"] # List of extracted facts
+        source_text = payload["source_text"]
+        
+        prompt = (
+            "You are a clinical integrity auditor. Your job is to verify if the following extracted facts are accurately supported by the provided source text.\n\n"
+            "SOURCE TEXT:\n"
+            f"{source_text[:12000]}\n\n" 
+            "EXTRACTED FACTS:\n"
+            f"{json.dumps(facts, indent=2)}\n\n"
+            "For each fact, determine if it is a hallucination or inaccurate. Provide a critique and suggested fix if needed.\n"
+            "Return valid JSON: {\"verifications\": [{\"fact_index\": 0, \"is_hallucination\": false, \"confidence_score\": 0.95, \"critique\": \"...\", \"suggested_fix\": \"...\"}]}"
+        )
+        
+        try:
+            resp = litellm.completion(
+                model="deepseek/deepseek-chat",
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"},
+                api_key=self.settings.model.primary_api_key
+            )
+            report = json.loads(resp.choices[0].message.content)
+            return {"success": True, "report": report.get("verifications", [])}
+        except Exception as e:
+            logger.error(f"Verification activity failed: {e}")
+            return {"success": False, "error": str(e)}

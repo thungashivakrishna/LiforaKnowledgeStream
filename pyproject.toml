@@ -45,6 +45,7 @@ dependencies = [
     "python-dotenv>=1.0.0",
     "python-slugify>=8.0.4",
     "xxhash>=3.4.1",
+    "duckduckgo-search>=5.0.0",
 ]
 
 [project.optional-dependencies]

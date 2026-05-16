@@ -1,6 +1,7 @@
 """Extraction activities — worker tasks for extracting text from raw artifacts."""
 import io
 import logging
+import json
 import uuid
 from datetime import datetime
 
@@ -129,6 +130,89 @@ class ExtractionActivities:
             return {"success": False, "error": str(e)}
 
     @activity.defn
+    async def chunk_extracted_text(self, payload: dict) -> dict:
+        """
+        Splits extracted text into chunks for parallel or sequential LLM processing.
+        Payload: extracted_object_key, chunk_size (optional)
+        """
+        object_key = payload["extracted_object_key"]
+        chunk_size = payload.get("chunk_size", 15000) # Default ~15k chars
+        bucket = self.settings.minio.bucket_extracted
+        
+        try:
+            response = self.minio_client.get_object(bucket, object_key)
+            text = response.read().decode("utf-8")
+            response.close()
+            response.release_conn()
+            
+            # Simple chunking by character count (better to use tokens or sentence boundaries in future)
+            chunks = [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
+            
+            return {
+                "success": True,
+                "chunks": chunks,
+                "total_chunks": len(chunks)
+            }
+        except Exception as e:
+            logger.error(f"Chunking failed for {object_key}: {e}")
+            return {"success": False, "error": str(e)}
+
+    @activity.defn
+    async def enhance_text_chunk(self, payload: dict) -> dict:
+        """
+        Performs LLM-based cleaning/formatting on a single text chunk.
+        """
+        chunk_text = payload["chunk_text"]
+        chunk_index = payload["chunk_index"]
+        
+        prompt = (
+            "You are a medical data architect. Convert the following raw OCR/Text chunk into clean, structured markdown. "
+            "Preserve all clinical values, dosages, and medical terms exactly. Do not summarize; just reformat and clean noise.\n\n"
+            f"Raw Chunk:\n{chunk_text}"
+        )
+        
+        try:
+            resp = litellm.completion(
+                model="deepseek/deepseek-chat",
+                messages=[{"role": "user", "content": prompt}],
+                api_key=self.settings.model.primary_api_key
+            )
+            enhanced = resp.choices[0].message.content
+            return {"success": True, "enhanced_text": enhanced, "chunk_index": chunk_index}
+        except Exception as e:
+            logger.warning(f"Chunk enhancement failed for index {chunk_index}: {e}")
+            return {"success": False, "error": str(e), "chunk_index": chunk_index}
+
+    @activity.defn
+    async def merge_enhanced_chunks(self, payload: dict) -> dict:
+        """
+        Merges multiple enhanced text chunks into a single document and updates MinIO.
+        """
+        chunks = payload["chunks"] # List of {"enhanced_text": "...", "chunk_index": 0}
+        original_key = payload["original_key"]
+        
+        # Sort by index just in case
+        sorted_chunks = sorted(chunks, key=lambda x: x["chunk_index"])
+        full_text = "\n\n".join([c["enhanced_text"] for c in sorted_chunks if c.get("enhanced_text")])
+        
+        ext_bucket = self.settings.minio.bucket_extracted
+        new_key = original_key # We overwrite or use a new suffix if needed
+        
+        try:
+            text_bytes = full_text.encode("utf-8")
+            self.minio_client.put_object(
+                ext_bucket,
+                new_key,
+                io.BytesIO(text_bytes),
+                length=len(text_bytes),
+                content_type="text/plain"
+            )
+            return {"success": True, "object_key": new_key}
+        except Exception as e:
+            logger.error(f"Merging failed: {e}")
+            return {"success": False, "error": str(e)}
+
+    @activity.defn
     async def update_extraction_status(self, payload: dict) -> None:
         """
         Updates the ExtractionRun status in the DB.
@@ -161,3 +245,34 @@ class ExtractionActivities:
                         doc.status = DocumentStatus.EXTRACTED # Propagate forward state
             
             await session.commit()
+
+    @activity.defn
+    async def verify_extraction_activity(self, payload: dict) -> dict:
+        """
+        Critic Agent: Reviews extracted facts against the source text to identify hallucinations.
+        """
+        facts = payload["facts"] # List of extracted facts (S-P-O + text)
+        source_text = payload["source_text"]
+        
+        prompt = (
+            "You are a clinical integrity auditor. Your job is to verify if the following extracted facts are accurately supported by the provided source text.\n\n"
+            "SOURCE TEXT:\n"
+            f"{source_text[:10000]}\n\n" # Limit source for token safety
+            "EXTRACTED FACTS:\n"
+            f"{json.dumps(facts, indent=2)}\n\n"
+            "For each fact, determine if it is a hallucination or inaccurate. Provide a critique and suggested fix if needed.\n"
+            "Return valid JSON: {\"verifications\": [{\"id\": \"fact_id\", \"is_hallucination\": false, \"confidence_score\": 0.95, \"critique\": \"...\", \"suggested_fix\": \"...\"}]}"
+        )
+        
+        try:
+            resp = litellm.completion(
+                model="deepseek/deepseek-chat",
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"},
+                api_key=self.settings.model.primary_api_key
+            )
+            report = json.loads(resp.choices[0].message.content)
+            return {"success": True, "report": report.get("verifications", [])}
+        except Exception as e:
+            logger.error(f"Verification activity failed: {e}")
+            return {"success": False, "error": str(e)}

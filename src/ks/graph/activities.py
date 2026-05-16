@@ -20,6 +20,31 @@ class GraphActivities:
         self.settings = get_settings()
 
     @activity.defn
+    async def initialize_graph_schema(self) -> None:
+        """Ensures Neo4j constraints and indices exist for high-performance syncing."""
+        def _init_tx(tx):
+            # Unique constraints for core nodes
+            tx.run("CREATE CONSTRAINT source_id_unique IF NOT EXISTS FOR (s:Source) REQUIRE s.id IS UNIQUE")
+            tx.run("CREATE CONSTRAINT doc_id_unique IF NOT EXISTS FOR (d:Document) REQUIRE d.id IS UNIQUE")
+            tx.run("CREATE CONSTRAINT entity_name_unique IF NOT EXISTS FOR (e:Entity) REQUIRE e.name IS UNIQUE")
+            
+            # Indices for specialized tags
+            tag_labels = [
+                "Framework", "Topic", "Condition", "Symptom", "Intervention", 
+                "Food", "Nutrient", "ActivityType", "Population"
+            ]
+            for label in tag_labels:
+                tx.run(f"CREATE INDEX {label.lower()}_value_idx IF NOT EXISTS FOR (t:{label}) ON (t.value)")
+
+        try:
+            with self.neo4j_driver.session() as session:
+                session.execute_write(_init_tx)
+            logger.info("Graph schema (constraints/indices) initialized successfully.")
+        except Exception as e:
+            logger.error(f"Failed to initialize graph schema: {e}")
+            raise e
+
+    @activity.defn
     async def fetch_graph_data(self, payload: dict) -> dict:
         """
         Fetches related knowledge data from PostgreSQL.

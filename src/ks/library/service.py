@@ -9,11 +9,11 @@ class LibraryService:
     def __init__(self, db: AsyncSession):
         self.db = db
 
-    async def list_documents(self, q: str | None = None, limit: int = 50, offset: int = 0):
+    async def list_documents(self, q: str | None = None, status: str | None = None, framework: str | None = None, source_type: str | None = None, limit: int = 50, offset: int = 0):
         # Base query joining necessary relations
         query = (
             select(DocumentRegistry)
-            .join(DocumentRegistry.summary)
+            .outerjoin(DocumentRegistry.summary)
             .join(SourceRegistry, DocumentRegistry.source_id == SourceRegistry.id)
             .options(
                 selectinload(DocumentRegistry.tags),
@@ -29,12 +29,27 @@ class LibraryService:
             .scalar_subquery()
         )
         
+        # Filtering logic
+        if status:
+            query = query.where(DocumentRegistry.status == status)
+        if source_type:
+            query = query.where(SourceRegistry.source_type == source_type)
+        if framework:
+            # We need to join KnowledgeTag to filter by framework
+            query = query.join(DocumentRegistry.tags).where(
+                KnowledgeTag.tag_type == "FRAMEWORK",
+                KnowledgeTag.tag_value == framework
+            )
+
         # Add search and ranking logic
         if q:
             # PostgreSQL Full-Text Search for relevance
             search_query = func.plainto_tsquery('english', q)
             # Combine title and summary for the search vector
-            search_vector = func.to_tsvector('english', DocumentRegistry.title + " " + KnowledgeSummary.summary_text)
+            search_vector = func.to_tsvector('english', 
+                func.coalesce(DocumentRegistry.title, '') + " " + 
+                func.coalesce(KnowledgeSummary.summary_text, '')
+            )
             
             # Ranking components:
             # 1. Text Match Score (ts_rank)
@@ -61,11 +76,25 @@ class LibraryService:
 
         query = query.limit(limit).offset(offset)
         
-        # Count query
-        count_query = select(func.count()).select_from(DocumentRegistry).join(DocumentRegistry.summary)
+        # Count query (replicate filters for accurate total)
+        count_query = select(func.count()).select_from(DocumentRegistry).join(SourceRegistry, DocumentRegistry.source_id == SourceRegistry.id)
+        if status:
+            count_query = count_query.where(DocumentRegistry.status == status)
+        if source_type:
+            count_query = count_query.where(SourceRegistry.source_type == source_type)
+        if framework:
+            count_query = count_query.join(DocumentRegistry.tags).where(
+                KnowledgeTag.tag_type == "FRAMEWORK",
+                KnowledgeTag.tag_value == framework
+            )
         if q:
             search_query = func.plainto_tsquery('english', q)
-            search_vector = func.to_tsvector('english', DocumentRegistry.title + " " + KnowledgeSummary.summary_text)
+            # Must join summary for count search
+            count_query = count_query.outerjoin(DocumentRegistry.summary)
+            search_vector = func.to_tsvector('english', 
+                func.coalesce(DocumentRegistry.title, '') + " " + 
+                func.coalesce(KnowledgeSummary.summary_text, '')
+            )
             count_query = count_query.where(search_vector.op('@@')(search_query))
         
         if q:
@@ -143,8 +172,49 @@ class LibraryService:
                 or_(*pred_filters),
                 or_(*target_filters)
             ))
-            .options(selectinload(KnowledgeFact.document))
+            .options(
+                selectinload(KnowledgeFact.document).selectinload(DocumentRegistry.tags),
+                selectinload(KnowledgeFact.document)
+            )
         )
         
         result = await self.db.execute(query)
         return result.scalars().all()
+
+    async def get_library_intelligence(self):
+        """Aggregate metrics to evaluate the quality and quantity of the knowledge base."""
+        # 1. Facts by Framework
+        fw_stats_q = (
+            select(KnowledgeTag.tag_value, func.count(KnowledgeFact.id))
+            .join(DocumentRegistry, DocumentRegistry.id == KnowledgeTag.document_id)
+            .join(KnowledgeFact, KnowledgeFact.document_id == DocumentRegistry.id)
+            .where(KnowledgeTag.tag_type == "FRAMEWORK")
+            .group_by(KnowledgeTag.tag_value)
+        )
+        
+        # 2. Avg Confidence and total facts
+        total_stats_q = select(
+            func.count(KnowledgeFact.id),
+            func.avg(KnowledgeFact.confidence)
+        )
+        
+        # 3. Recent Actionable Items
+        recent_actionable_q = (
+            select(KnowledgeFact)
+            .order_by(KnowledgeFact.created_at.desc())
+            .limit(10)
+            .options(selectinload(KnowledgeFact.document))
+        )
+        
+        fw_res = await self.db.execute(fw_stats_q)
+        total_res = await self.db.execute(total_stats_q)
+        recent_res = await self.db.execute(recent_actionable_q)
+        
+        total_count, avg_conf = total_res.first()
+        
+        return {
+            "total_facts": total_count or 0,
+            "avg_confidence": float(avg_conf or 0),
+            "framework_distribution": {row[0]: row[1] for row in fw_res.all()},
+            "recent_findings": recent_res.scalars().all()
+        }

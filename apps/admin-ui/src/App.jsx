@@ -10,7 +10,9 @@ import {
   LayoutDashboard,
   Menu,
   X,
-  UserCircle
+  UserCircle,
+  Target,
+  Network
 } from 'lucide-react'
 import SourceRegistry from './pages/SourceRegistry'
 import KnowledgeLibrary from './pages/KnowledgeLibrary'
@@ -19,6 +21,9 @@ import Dashboard from './pages/Dashboard'
 import Discovery from './pages/Discovery'
 import UserMapping from './pages/UserMapping'
 import ReviewQueue from './pages/ReviewQueue'
+import KnowledgeIntelligence from './pages/KnowledgeIntelligence'
+import PersonalizedProtocols from './pages/PersonalizedProtocols'
+import GraphExplorer from './pages/GraphExplorer'
 import { clsx } from 'clsx'
 
 const NavItem = ({ to, icon: Icon, label, active }) => (
@@ -56,9 +61,12 @@ const App = () => {
     { to: "/", icon: LayoutDashboard, label: "Dashboard" },
     { to: "/sources", icon: Database, label: "Source Registry" },
     { to: "/discovery", icon: Search, label: "Discovery" },
+    { to: "/protocols", icon: Target, label: "Protocols" },
     { to: "/mapping", icon: UserCircle, label: "User Mapping" },
     { to: "/documents", icon: FileText, label: "Documents" },
     { to: "/review", icon: ShieldAlert, label: "Review Queue" },
+    { to: "/graph", icon: Network, label: "Graph Explorer" },
+    { to: "/intelligence", icon: Activity, label: "Intelligence" },
     { to: "/inspector", icon: BarChart3, label: "System Inspector" },
   ]
 
@@ -134,8 +142,11 @@ const App = () => {
             <Route path="/sources/*" element={<SourceRegistry />} />
             <Route path="/discovery" element={<Discovery />} />
             <Route path="/mapping" element={<UserMapping />} />
+            <Route path="/protocols" element={<PersonalizedProtocols />} />
             <Route path="/documents" element={<KnowledgeLibrary />} />
             <Route path="/review" element={<ReviewQueue />} />
+            <Route path="/graph" element={<GraphExplorer />} />
+            <Route path="/intelligence" element={<KnowledgeIntelligence />} />
             <Route path="/inspector" element={<SystemInspector />} />
             <Route path="*" element={<PlaceholderPage title="Page Not Found" />} />
           </Routes>

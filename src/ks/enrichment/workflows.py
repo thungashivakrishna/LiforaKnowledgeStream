@@ -171,8 +171,28 @@ class EnrichmentWorkflow:
             "run_id": run_id,
             "document_id": doc_id,
             "enrichment": merged_enrichment,
-            "model": f"Multi-Agent ({model})"
+            "model": model # Store the actual model identifier for dashboard metrics
         }
+        
+        # 5.5 Multi-Model Verification (Critic)
+        # Fetch the full text for the critic to review
+        text_result = await workflow.execute_activity(
+            "fetch_extracted_text",
+            {"extracted_object_key": extracted_text_key},
+            start_to_close_timeout=timedelta(minutes=2),
+        )
+        
+        if text_result.get("success"):
+            verify_result = await workflow.execute_activity(
+                "verify_extraction_activity",
+                {
+                    "facts": merged_enrichment.get("facts", []),
+                    "source_text": text_result["text"]
+                },
+                start_to_close_timeout=timedelta(minutes=5),
+            )
+            if verify_result.get("success"):
+                persist_payload["verification_report"] = verify_result.get("report", [])
         
         persist_result = await workflow.execute_activity(
             "persist_enrichment_results",
@@ -198,6 +218,7 @@ class EnrichmentWorkflow:
             {
                 "run_id": run_id,
                 "status": RunStatus.COMPLETED.value,
+                "model_used": model, # Propagate final model (includes fallback if it happened)
                 "prompt_tokens": total_prompt_tokens,
                 "completion_tokens": total_completion_tokens,
                 "total_tokens": total_tokens

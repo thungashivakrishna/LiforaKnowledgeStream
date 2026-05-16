@@ -24,11 +24,22 @@ class FetchRunResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class FactTriple(BaseModel):
+    subject: str = Field(description="The primary subject of the fact.")
+    predicate: str = Field(description="The action or relationship.")
+    object: str = Field(description="The object or value of the fact.")
+    fact_text: str = Field(description="A full sentence describing the fact.")
+
+    model_config = {"extra": "forbid"}
+
+
 class IntelligenceAuditOutput(BaseModel):
     is_high_value: bool = Field(description="True if the document contains substantial clinical or nutritional details.")
     reason: str = Field(description="Reason for the decision.")
     suggested_links: list[str] = Field(default_factory=list, description="Links to follow if this page is just an index.")
-    initial_facts: list[dict] = Field(default_factory=list, description="Top 3 key facts extracted immediately if high value.")
+    initial_facts: list[FactTriple] = Field(default_factory=list, description="Top 3 key facts extracted immediately if high value.")
+
+    model_config = {"extra": "forbid"}
 
 class DocumentVersionResponse(BaseModel):
     id: uuid.UUID

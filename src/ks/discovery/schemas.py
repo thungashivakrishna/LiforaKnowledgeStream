@@ -89,3 +89,20 @@ class DiscoveryRunDetailResponse(DiscoveryRunResponse):
     source_scope: dict | None = None
     framework_scope: dict | None = None
     candidates: list[CandidateDocumentResponse] = Field(default_factory=list)
+
+
+# ── Intelligent Prioritization ────────────────────────────────────────────────
+
+class DocumentRelevanceScoreOutput(BaseModel):
+    clinical_relevance: float = Field(..., description="0.0 to 1.0 score for clinical/medical relevance")
+    intent_match: float = Field(..., description="0.0 to 1.0 score matching the target topics/frameworks")
+    evidence_likelihood: float = Field(..., description="0.0 to 1.0 likelihood of containing structured evidence (trials, protocols)")
+    actionability: float = Field(..., description="0.0 to 1.0 score for practical clinical actionability")
+    safety_value: float = Field(..., description="0.0 to 1.0 score for safety guidelines or contraindications presence")
+    freshness: float = Field(..., description="0.0 to 1.0 score based on recency or evergreen status")
+    commercial_bias_risk: float = Field(..., description="0.0 to 1.0 risk score of SEO spam or heavy commercial bias")
+    source_trust_multiplier: float = Field(..., description="0.5 to 1.5 multiplier based on domain authority")
+    
+    overall_priority_score: float = Field(..., description="Final calculated score (0 to 100)")
+    explanation: str = Field(..., description="Brief 1-sentence explanation of the score")
+    recommended_action: str = Field(..., description="EXTRACT, QUEUE, METADATA_ONLY, or REJECT")

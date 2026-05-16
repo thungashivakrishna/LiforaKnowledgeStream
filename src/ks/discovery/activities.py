@@ -1,4 +1,4 @@
-"""Discovery activities — worker tasks for finding candidate documents."""
+import json
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -6,14 +6,16 @@ from typing import Any
 from urllib.parse import urljoin, urlparse
 
 import httpx
+import litellm
 from bs4 import BeautifulSoup
 from sqlalchemy import select
 from temporalio import activity
 
 from apps.api.database import AsyncSessionFactory
+from ks.config.settings import get_settings
+from ks.discovery.schemas import DocumentRelevanceScoreOutput
 from ks.domain.enums import DiscoveryDecision, DiscoveryMode, RunStatus
 from ks.domain.models import CandidateDiscoveryRun, CandidateDocumentEvaluation, DocumentRegistry
-
 
 logger = logging.getLogger(__name__)
 
@@ -117,9 +119,19 @@ class DiscoveryActivities:
             if allow and not any(p in url for p in allow):
                 continue
             
+            # 4. Simple scoring heuristic
+            score = 0.5
+            # Bonus for article-like paths
+            if any(p in url.lower() for p in ["/article/", "/condition/", "/guide/", "/protocol/", "/health-topics/"]):
+                score += 0.3
+            # Penalty for suspicious index-like long params
+            if "?" in url and len(url.split("?")[1]) > 50:
+                score -= 0.2
+            
             results.append({
                 "url": url,
                 "title": None, # Title will be fetched later during fetch/extraction
+                "score": round(min(0.99, max(0.01, score)), 2),
                 "discovered_at": datetime.now(timezone.utc).isoformat(),
             })
         return results
@@ -152,11 +164,20 @@ class DiscoveryActivities:
                     session.add(doc)
                     await session.flush()
                 
+                # 2. Prevent Duplicate Evaluations in the SAME run
+                existing_eval = await session.execute(
+                    select(CandidateDocumentEvaluation)
+                    .where(CandidateDocumentEvaluation.run_id == run_id)
+                    .where(CandidateDocumentEvaluation.document_id == doc.id)
+                )
+                if existing_eval.scalar_one_or_none():
+                    continue
+
                 eval_obj = CandidateDocumentEvaluation(
                     id=uuid.uuid4(),
                     run_id=run_id,
                     document_id=doc.id,
-                    score=0.5,
+                    score=c.get("score", 0.5),
                     matched_terms=[],
                     decision=DiscoveryDecision.INGEST_NOW,
                 )
@@ -190,3 +211,191 @@ class DiscoveryActivities:
                 run.error_message = error_message
                 run.completed_at = datetime.now(timezone.utc)
                 await session.commit()
+
+    @activity.defn
+    async def fetch_page_metadata(self, url: str) -> dict[str, Any]:
+        """Fetch lightweight metadata from a URL without downloading the full page."""
+        try:
+            # Use a fast timeout and fetch only first few KB if possible
+            resp = await self.http_client.get(url, follow_redirects=True, timeout=5.0)
+            if resp.status_code != 200:
+                return {}
+            
+            soup = BeautifulSoup(resp.content, "html.parser")
+            
+            metadata = {
+                "title": soup.title.string if soup.title else None,
+                "meta_description": "",
+                "h1_headings": [h1.get_text(strip=True) for h1 in soup.find_all("h1")],
+                "canonical_url": "",
+                "schema_type": []
+            }
+            
+            meta_desc = soup.find("meta", attrs={"name": "description"})
+            if meta_desc:
+                metadata["meta_description"] = meta_desc.get("content", "")
+                
+            canonical = soup.find("link", rel="canonical")
+            if canonical:
+                metadata["canonical_url"] = canonical.get("href", "")
+                
+            schema_tags = soup.find_all("script", type="application/ld+json")
+            for tag in schema_tags:
+                try:
+                    data = json.loads(tag.string)
+                    if isinstance(data, dict):
+                        metadata["schema_type"].append(data.get("@type", ""))
+                    elif isinstance(data, list):
+                        for item in data:
+                            metadata["schema_type"].append(item.get("@type", ""))
+                except Exception:
+                    pass
+                    
+            return metadata
+        except Exception as e:
+            logger.warning(f"Failed to fetch metadata for {url}: {e}")
+            return {}
+
+    @activity.defn
+    async def calculate_priority_score(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Use a lightweight model to score clinical relevance based on metadata."""
+        url = payload.get("url", "")
+        metadata = payload.get("metadata", {})
+        topics = payload.get("topics", [])
+        source_trust = payload.get("source_trust_score", 1.0)
+        
+        settings = get_settings()
+        # Default to a fast/cheap model for prioritization
+        model = settings.model.primary_model
+        api_key = settings.model.primary_api_key
+        
+        prompt = f"""
+        You are an advanced Clinical Triage AI. Your job is to prioritize a discovered web document before we spend resources fully extracting it.
+        
+        URL: {url}
+        Target Focus / Topics: {topics}
+        Source Trust Score: {source_trust}
+        
+        Metadata:
+        {json.dumps(metadata, indent=2)}
+        
+        Evaluate the document based on the metadata and return a JSON score object matching the specified output schema.
+        - clinical_relevance (0.0 to 1.0)
+        - intent_match (0.0 to 1.0): Does it match {topics}?
+        - evidence_likelihood (0.0 to 1.0): Does it look like a study, protocol, or guideline?
+        - actionability (0.0 to 1.0)
+        - safety_value (0.0 to 1.0)
+        - freshness (0.0 to 1.0)
+        - commercial_bias_risk (0.0 to 1.0): Does it look like SEO spam or a product sales page?
+        - source_trust_multiplier (0.5 to 1.5): Based on Source Trust Score provided.
+        
+        Calculate the overall_priority_score (0 to 100):
+        Score = ((clinical_relevance * 0.2) + (intent_match * 0.2) + (evidence_likelihood * 0.15) + 
+                (actionability * 0.1) + (safety_value * 0.15) + (freshness * 0.1) - 
+                (commercial_bias_risk * 0.3)) * source_trust_multiplier * 100
+        Clamp final score to 0-100.
+        
+        Recommended Action logic:
+        - 85-100: EXTRACT
+        - 65-84: QUEUE
+        - 40-64: METADATA_ONLY
+        - 0-39: REJECT
+        """
+        
+        try:
+            response = litellm.completion(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"},
+                api_key=api_key
+            )
+            
+            output = json.loads(response.choices[0].message.content)
+            return {"success": True, "score_data": output}
+        except Exception as e:
+            logger.error(f"Priority scoring failed for {url}: {e}")
+            return {"success": False, "error": str(e)}
+
+    @activity.defn
+    async def evaluate_source_authority(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Evaluate a new/unknown domain to determine if it should be allowed."""
+        domain = payload.get("domain", "")
+        snippet = payload.get("snippet", "")
+        
+        settings = get_settings()
+        model = settings.model.primary_model
+        api_key = settings.model.primary_api_key
+        
+        prompt = f"""
+        Evaluate the following web domain for clinical and medical authority.
+        Domain: {domain}
+        Sample Context: {snippet}
+        
+        Is this a reputable academic, public health, government, or recognized clinical site?
+        Return a JSON object with:
+        - is_reputable (bool)
+        - trust_score (0.0 to 1.0)
+        - reason (string)
+        - source_type (e.g. ACADEMIC, GOVERNMENT, COMMERCIAL_WELLNESS, SPAM)
+        """
+        
+        try:
+            response = litellm.completion(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"},
+                api_key=api_key
+            )
+            
+            output = json.loads(response.choices[0].message.content)
+            return {"success": True, "evaluation": output}
+        except Exception as e:
+            logger.error(f"Source authority evaluation failed for {domain}: {e}")
+            return {"success": False, "error": str(e)}
+
+    @activity.defn
+    async def perform_targeted_search(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        """Execute intent-driven search across configured providers."""
+        query = payload.get("query", "")
+        limit = payload.get("limit", 20)
+        
+        # We will use DuckDuckGo as fallback, and EuropePMC for scientific
+        from ks.discovery.search import DuckDuckGoProvider, EuropePMCProvider
+        
+        ddg = DuckDuckGoProvider(self.http_client)
+        epmc = EuropePMCProvider(self.http_client)
+        
+        results = []
+        try:
+            # First fetch scientific
+            epmc_res = await epmc.search(query, limit=limit//2)
+            results.extend(epmc_res)
+            
+            # Then open web fallback
+            ddg_res = await ddg.search(query, limit=limit//2)
+            results.extend(ddg_res)
+            
+        except Exception as e:
+            logger.error(f"Targeted search failed: {e}")
+            
+        return results
+
+    @activity.defn
+    async def perform_deep_crawl(self, payload: dict[str, Any]) -> list[dict[str, Any]]:
+        """Run controlled deep crawl from a high-priority URL."""
+        start_url = payload.get("url", "")
+        max_depth = payload.get("max_depth", 1)
+        max_pages = payload.get("max_pages", 20)
+        
+        from ks.discovery.crawler import AsyncHttpCrawler, CrawlerConfig
+        
+        config = CrawlerConfig(
+            max_depth=max_depth,
+            max_pages=max_pages,
+            rate_limit_seconds=1.0,
+            max_pdf_size_mb=5
+        )
+        
+        crawler = AsyncHttpCrawler(self.http_client)
+        results = await crawler.crawl(start_url, config)
+        return results

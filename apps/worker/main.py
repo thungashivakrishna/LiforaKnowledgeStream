@@ -14,7 +14,7 @@ from ks.discovery.workflows import DiscoveryWorkflow
 from ks.acquisition.activities import AcquisitionActivities
 from ks.acquisition.workflows import AcquisitionWorkflow
 from ks.extraction.activities import ExtractionActivities
-from ks.extraction.workflows import ExtractionWorkflow
+from ks.extraction.workflows import ExtractionWorkflow, RecursiveExtractionWorkflow
 from ks.enrichment.activities import EnrichmentActivities
 from ks.enrichment.workflows import EnrichmentWorkflow
 from ks.chunking.activities import ChunkingActivities
@@ -67,20 +67,28 @@ async def main() -> None:
             task_queue=settings.temporal.task_queue,
             workflows=[
                 DiscoveryWorkflow, AcquisitionWorkflow, ExtractionWorkflow, 
-                EnrichmentWorkflow, ChunkingWorkflow, GraphSyncWorkflow,
-                DocumentIngestionWorkflow
+                RecursiveExtractionWorkflow, EnrichmentWorkflow, ChunkingWorkflow, 
+                GraphSyncWorkflow, DocumentIngestionWorkflow
             ],
             activities=[
                 system_activities.prepare_stage_run,
                 discovery_activities.discover_candidates,
                 discovery_activities.persist_candidates,
                 discovery_activities.finalize_discovery_run,
+                discovery_activities.perform_targeted_search,
+                discovery_activities.evaluate_source_authority,
+                discovery_activities.fetch_page_metadata,
+                discovery_activities.calculate_priority_score,
+                discovery_activities.perform_deep_crawl,
                 acquisition_activities.fetch_content,
                 acquisition_activities.audit_document_intelligence,
                 acquisition_activities.persist_audit_facts,
                 acquisition_activities.store_raw_artifact,
                 acquisition_activities.update_fetch_status,
                 extraction_activities.perform_full_extraction,
+                extraction_activities.chunk_extracted_text,
+                extraction_activities.enhance_text_chunk,
+                extraction_activities.merge_enhanced_chunks,
                 extraction_activities.update_extraction_status,
                 enrichment_activities.detect_relevant_frameworks,
                 enrichment_activities.run_llm_enrichment,

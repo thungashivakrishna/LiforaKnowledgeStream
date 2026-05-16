@@ -11,13 +11,16 @@ router = APIRouter(prefix="/library", tags=["Knowledge Library"])
 @router.get("/documents", response_model=LibraryDocumentListContainer)
 async def list_library_documents(
     q: str | None = Query(None, description="Search query for relevance-based results"),
+    status: str | None = Query(None, description="Filter by document status"),
+    framework: str | None = Query(None, description="Filter by framework"),
+    source_type: str | None = Query(None, description="Filter by source type"),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     db: AsyncSession = Depends(get_db_session)
 ):
     """List all completed documents available in the Knowledge Library."""
     service = LibraryService(db)
-    items, total = await service.list_documents(q, limit, offset)
+    items, total = await service.list_documents(q, status, framework, source_type, limit, offset)
     
     formatted_items = []
     for doc in items:
@@ -91,7 +94,7 @@ async def get_personalized_protocol(
     service = LibraryService(db)
     items = await service.get_personalized_guidelines(profile.model_dump())
     
-    formatted_items = []
+    formatted_items = {}
     for fact in items:
         # Check against allergies/contradictions
         conflict = False
@@ -102,18 +105,35 @@ async def get_personalized_protocol(
                     break
         
         if not conflict:
-            formatted_items.append({
-                "id": fact.id,
+            # Semantic Key for Deduplication
+            key = f"{fact.subject.lower()}|{fact.object_.lower()}"
+            
+            # Extract tags for context
+            tags = []
+            if fact.document and fact.document.tags:
+                tags = [{"type": t.tag_type, "value": t.tag_value} for t in fact.document.tags]
+            
+            framework = next((t["value"] for t in tags if t["type"] == "FRAMEWORK"), "General Health")
+            topic = next((t["value"] for t in tags if t["type"] == "TOPIC"), None)
+
+            item = {
+                "id": str(fact.id),
                 "fact_text": fact.fact_text,
                 "subject": fact.subject,
                 "predicate": fact.predicate,
                 "object": fact.object_,
                 "confidence": fact.confidence,
                 "document_title": fact.document.title if fact.document else None,
-                "document_id": fact.document_id
-            })
-        
-    return formatted_items
+                "document_id": str(fact.document_id) if fact.document_id else None,
+                "framework": framework,
+                "topic": topic
+            }
+            
+            # Keep highest confidence for the same core insight
+            if key not in formatted_items or fact.confidence > formatted_items[key]["confidence"]:
+                formatted_items[key] = item
+    
+    return sorted(formatted_items.values(), key=lambda x: x["confidence"], reverse=True)
 
 class EditFactRequest(BaseModel):
     subject: Optional[str] = None
@@ -165,4 +185,26 @@ async def delete_fact(
     await db.delete(fact)
     await db.commit()
     return {"message": "Fact deleted successfully"}
+
+@router.get("/intelligence")
+async def get_library_intelligence(db: AsyncSession = Depends(get_db_session)):
+    """Fetch high-level intelligence metrics for the entire knowledge base."""
+    service = LibraryService(db)
+    stats = await service.get_library_intelligence()
+    
+    # Format recent findings
+    findings = []
+    for f in stats["recent_findings"]:
+        findings.append({
+            "id": f.id,
+            "fact_text": f.fact_text,
+            "subject": f.subject,
+            "predicate": f.predicate,
+            "object": f.object_,
+            "confidence": f.confidence,
+            "document_title": f.document.title if f.document else None
+        })
+    
+    stats["recent_findings"] = findings
+    return stats
 

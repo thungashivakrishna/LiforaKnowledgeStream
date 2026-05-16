@@ -82,3 +82,85 @@ class GraphService:
         result = await self.session.execute(q.offset(offset).limit(limit))
         
         return list(result.scalars().all()), total
+    async def sync_fact_to_graph(self, fact_id: uuid.UUID) -> bool:
+        """Sync a single verified fact from PostgreSQL to Neo4j with clinical metadata."""
+        from ks.domain.models import KnowledgeFact, KnowledgeTag, DocumentRegistry, SourceFrameworkMap
+        from neo4j import AsyncGraphDatabase
+        from ks.config.settings import get_settings
+        from ks.domain.enums import ValidationStatus
+
+        # 1. Fetch fact and related clinical metadata
+        res = await self.session.execute(
+            select(KnowledgeFact)
+            .where(KnowledgeFact.id == fact_id)
+            .options(selectinload(KnowledgeFact.document))
+        )
+        fact = res.scalar_one_or_none()
+        if not fact or not fact.subject or not fact.predicate or not fact.object_:
+            return False
+
+        # 2. Lookup Entity Types from Tags for this document
+        tag_res = await self.session.execute(
+            select(KnowledgeTag).where(KnowledgeTag.document_id == fact.document_id)
+        )
+        tags = tag_res.scalars().all()
+        
+        # Build mapping of name -> type
+        type_map = {t.tag_value.lower(): t.tag_type.value for t in tags}
+        subject_type = type_map.get(fact.subject.lower(), "Entity")
+        object_type = type_map.get(fact.object_.lower(), "Entity")
+        
+        # 3. Lookup Framework from Source
+        framework = "GENERAL"
+        if fact.document:
+            fw_res = await self.session.execute(
+                select(SourceFrameworkMap)
+                .where(SourceFrameworkMap.source_id == fact.document.source_id)
+                .where(SourceFrameworkMap.is_primary == True)
+            )
+            primary_fw = fw_res.scalar_one_or_none()
+            if primary_fw:
+                framework = primary_fw.framework.value
+
+        # 4. Sync to Neo4j
+        settings = get_settings()
+        driver = AsyncGraphDatabase.driver(
+            settings.neo4j.uri, 
+            auth=(settings.neo4j.user, settings.neo4j.password)
+        )
+        
+        # Dynamic labels based on types
+        query = f"""
+        MERGE (subj:Entity:{subject_type} {{name: $subject}})
+        MERGE (obj:Entity:{object_type} {{name: $object}})
+        WITH subj, obj
+        MERGE (subj)-[r:RELATED_TO]->(obj)
+        SET r.predicate = $predicate, 
+            r.confidence = $confidence, 
+            r.fact_id = $fact_id,
+            r.framework = $framework,
+            subj.framework = $framework,
+            obj.framework = $framework
+        RETURN r
+        """
+        
+        try:
+            async with driver.session() as session:
+                await session.run(
+                    query, 
+                    subject=fact.subject, 
+                    predicate=fact.predicate, 
+                    object=fact.object_, 
+                    confidence=fact.confidence,
+                    fact_id=str(fact.id),
+                    framework=framework
+                )
+            await driver.close()
+            
+            # Update validation status
+            fact.validation_status = ValidationStatus.VALIDATED
+            await self.session.commit()
+            return True
+        except Exception as e:
+            await driver.close()
+            raise e

@@ -23,4 +23,9 @@ class ExtractionRunResponse(BaseModel):
     completed_at: datetime | None
     error_message: str | None
     
-    model_config = {"from_attributes": True}
+
+class VerificationResult(BaseModel):
+    is_hallucination: bool
+    confidence_score: float
+    critique: str
+    suggested_fix: str | None = None

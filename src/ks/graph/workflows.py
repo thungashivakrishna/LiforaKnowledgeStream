@@ -20,6 +20,12 @@ class GraphSyncWorkflow:
         """
         run_id = payload["run_id"]
         doc_id = payload["document_id"]
+
+        # 0. Initialize Schema (Idempotent)
+        await workflow.execute_activity(
+            "initialize_graph_schema",
+            start_to_close_timeout=timedelta(minutes=1),
+        )
         
         # 1. Fetch Graph Data
         fetch_result = await workflow.execute_activity(

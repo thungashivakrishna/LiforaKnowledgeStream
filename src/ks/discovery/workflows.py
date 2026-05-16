@@ -3,6 +3,8 @@ from datetime import timedelta
 from typing import Any
 
 from temporalio import workflow
+with workflow.unsafe.imports_passed_through():
+    import asyncio
 
 from ks.domain.enums import RunStatus
 
@@ -12,123 +14,156 @@ class DiscoveryWorkflow:
     @workflow.run
     async def run(self, payload: dict[str, Any]) -> dict[str, Any]:
         """
-        Discovery workflow: coordinates discovery activities across multiple sources.
-        Payload keys: run_id, mode, filter_profile (dict), sources (list of dicts)
+        Intent-Driven Discovery Workflow: implements the 10-step intelligent funnel.
+        Payload keys: run_id, topics, filter_profile (dict), frameworks, max_candidates
         """
         run_id = payload["run_id"]
-        mode = payload["mode"]
-        filter_profile = payload.get("filter_profile", {})
-        sources = payload.get("sources", [])
+        topics = payload.get("topics", [])
+        frameworks = payload.get("frameworks", [])
+        max_candidates = payload.get("max_candidates", 50)
         
         total_discovered = 0
-
-        async def process_single_source(source: dict) -> int:
-            # Internal method to handle a source fully parallelized
-            import asyncio
-            source_discovered = 0
-            try:
-                activity_payload = {
-                    "source_id": source["id"],
-                    "root_url": source["root_url"],
-                    "mode": mode,
-                    "allow_patterns": source.get("allow_patterns", []),
-                    "block_patterns": source.get("block_patterns", []),
-                    "max_candidates": filter_profile.get("per_source_limit", 20),
-                }
-
-                candidates = await workflow.execute_activity(
-                    "discover_candidates",
-                    activity_payload,
-                    start_to_close_timeout=timedelta(minutes=5),
+        extracted_count = 0
+        queued_count = 0
+        
+        workflow.logger.info(f"🚀 Intent-Driven Discovery initiated for topics: {topics}")
+        
+        try:
+            # 1 & 2 & 3. Intent-Driven Search
+            query = " ".join(topics)
+            search_payload = {
+                "query": query,
+                "limit": max_candidates
+            }
+            
+            search_results = await workflow.execute_activity(
+                "perform_targeted_search",
+                search_payload,
+                start_to_close_timeout=timedelta(minutes=2)
+            )
+            
+            workflow.logger.info(f"🔎 Search returned {len(search_results)} candidates.")
+            
+            # Process each search result
+            for result in search_results:
+                url = result.get("url")
+                snippet = result.get("snippet", "")
+                
+                # 4. Source Scoring (Bouncer)
+                from urllib.parse import urlparse
+                domain = urlparse(url).netloc
+                
+                auth_payload = {"domain": domain, "snippet": snippet}
+                auth_eval = await workflow.execute_activity(
+                    "evaluate_source_authority",
+                    auth_payload,
+                    start_to_close_timeout=timedelta(minutes=1)
                 )
-
-                if not candidates:
-                    return 0
-
-                persist_payload = {
-                    "run_id": run_id,
-                    "source_id": source["id"],
-                    "candidates": candidates,
+                
+                if not auth_eval.get("success") or not auth_eval.get("evaluation", {}).get("is_reputable"):
+                    workflow.logger.info(f"🛑 Rejecting domain {domain} due to low authority.")
+                    continue
+                    
+                trust_score = auth_eval.get("evaluation", {}).get("trust_score", 1.0)
+                
+                # 5 & 6. Metadata Fetch & Priority Scoring
+                metadata = await workflow.execute_activity(
+                    "fetch_page_metadata",
+                    url,
+                    start_to_close_timeout=timedelta(minutes=1)
+                )
+                
+                score_payload = {
+                    "url": url,
+                    "metadata": metadata,
+                    "topics": topics,
+                    "source_trust_score": trust_score
                 }
-
-                persisted_items = await workflow.execute_activity(
+                
+                score_eval = await workflow.execute_activity(
+                    "calculate_priority_score",
+                    score_payload,
+                    start_to_close_timeout=timedelta(minutes=2)
+                )
+                
+                if not score_eval.get("success"):
+                    continue
+                    
+                score_data = score_eval.get("score_data", {})
+                priority_score = score_data.get("overall_priority_score", 0)
+                action = score_data.get("recommended_action", "REJECT")
+                
+                workflow.logger.info(f"📊 Scored {url}: {priority_score} -> Action: {action}")
+                
+                if action == "REJECT" or priority_score < 40:
+                    continue
+                    
+                # Store candidate in registry
+                import datetime
+                
+                persist_payload = {
+                    "run_id": str(run_id),
+                    "source_id": "e792934e-0d46-4f65-870f-008e74ae1812", # PubMed Central as default open-web/intent source
+                    "candidates": [
+                        {
+                            "url": url,
+                            "title": metadata.get("title", url),
+                            "score": min(priority_score / 100.0, 0.99),
+                            "discovered_at": workflow.now().isoformat()
+                        }
+                    ]
+                }
+                
+                persisted_docs = await workflow.execute_activity(
                     "persist_candidates",
                     persist_payload,
-                    start_to_close_timeout=timedelta(minutes=2),
+                    start_to_close_timeout=timedelta(minutes=1)
                 )
-                source_discovered = len(persisted_items)
                 
-                # Fire off child ingestion workflows for this source's items concurrently
-                child_tasks = []
-                for item in persisted_items:
-                     task = workflow.start_child_workflow(
-                         "DocumentIngestionWorkflow",
-                         {
-                             "document_id": item["document_id"],
-                             "url": item["url"],
-                             "force_refresh": False,
-                             "framework_scope": payload.get("framework_scope", [])
-                         },
-                         id=f"ingest-doc-{item['document_id']}",
-                     )
-                     child_tasks.append(task)
-                     
-                handles = []
-                for t in child_tasks:
+                if persisted_docs:
+                    total_discovered += 1
+                
+                # 7 & 8 & 9. Queueing, Deep Crawling, and Extraction
+                if action == "EXTRACT" or priority_score >= 85:
+                    # Spawn Deep Crawl around high-value document
+                    crawl_payload = {
+                        "url": url,
+                        "max_depth": 2 if trust_score > 0.8 else 1,
+                        "max_pages": 10
+                    }
+                    # We fire-and-forget the crawl here or process sequentially.
+                    # For stability in Temporal, we await it.
+                    crawl_results = await workflow.execute_activity(
+                        "perform_deep_crawl",
+                        crawl_payload,
+                        start_to_close_timeout=timedelta(minutes=10)
+                    )
+                    workflow.logger.info(f"🕷️ Deep crawl around {url} found {len(crawl_results)} related links.")
+                    
+                    # Spawn DocumentIngestionWorkflow (Fire and forget, track by ID)
+                    import uuid
+                    doc_id = str(workflow.uuid4())
                     try:
-                        handles.append(await t)
-                    except Exception:
-                        pass
-
-                if handles:
-                    await asyncio.gather(*[h for h in handles], return_exceptions=True)
+                        await workflow.start_child_workflow(
+                            "DocumentIngestionWorkflow",
+                            {
+                                "document_id": doc_id,
+                                "url": url,
+                                "force_refresh": False,
+                                "framework_scope": frameworks,
+                                "targeted_keywords": topics
+                            },
+                            id=f"ingest-doc-{doc_id}",
+                        )
+                        extracted_count += 1
+                    except Exception as start_err:
+                        workflow.logger.warning(f"Could not start child workflow for {url}: {start_err}")
                 
-                return source_discovered
-            except Exception as e:
-                workflow.logger.error(f"Failed source processing for {source.get('root_url')}: {e}")
-                return 0
-
-        try:
-            import asyncio
+                elif action == "QUEUE":
+                    queued_count += 1
+                    # In a real DB, it remains in QUEUED_FOR_EXTRACTION.
             
-            current_cycle = 1
-            # Configure recursion. In production this could accept limit from payload.
-            MAX_CYCLES = payload.get("max_cycles", 10) 
-            CONTINUOUS = payload.get("continuous", True)
-            
-            while CONTINUOUS and current_cycle <= MAX_CYCLES:
-                workflow.logger.info(f"🚀 Autonomous Discovery Cycle {current_cycle} initiating...")
-                
-                # Run process_single_source for every source simultaneously in this cycle
-                source_results = await asyncio.gather(
-                    *[process_single_source(source) for source in sources],
-                    return_exceptions=True
-                )
-                
-                # Sum new discovered items in this cycle
-                cycle_discovery = 0
-                for res in source_results:
-                    if isinstance(res, int):
-                        cycle_discovery += res
-                
-                total_discovered += cycle_discovery
-                
-                workflow.logger.info(f"✅ Finished Cycle {current_cycle}. Found {cycle_discovery} items. Total: {total_discovered}")
-                
-                # If this cycle didn't find ANY new items across all sources, exit early to save CPU
-                if cycle_discovery == 0 and current_cycle > 1:
-                     workflow.logger.info("No further items discovered in deep sweep. Stopping cycle loop.")
-                     break
-                     
-                # Prepare for next cycle
-                current_cycle += 1
-                
-                if current_cycle <= MAX_CYCLES:
-                    # Add sleep buffer to act like a real background scanner
-                    sleep_seconds = payload.get("cycle_delay_seconds", 30)
-                    workflow.logger.info(f"Sleeping for {sleep_seconds}s before next autonomous cycle...")
-                    await workflow.sleep(timedelta(seconds=sleep_seconds))
-
+            # 10. Finalize
             await workflow.execute_activity(
                 "finalize_discovery_run",
                 {
@@ -138,7 +173,9 @@ class DiscoveryWorkflow:
                 },
                 start_to_close_timeout=timedelta(seconds=30),
             )
+            
         except Exception as exc:
+            workflow.logger.error(f"Discovery workflow failed: {exc}")
             await workflow.execute_activity(
                 "finalize_discovery_run",
                 {
@@ -154,5 +191,7 @@ class DiscoveryWorkflow:
         return {
             "run_id": run_id,
             "total_discovered": total_discovered,
+            "extracted": extracted_count,
+            "queued": queued_count,
             "status": RunStatus.COMPLETED.value,
         }

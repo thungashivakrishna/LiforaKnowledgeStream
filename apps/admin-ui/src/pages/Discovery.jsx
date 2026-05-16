@@ -450,7 +450,7 @@ const Discovery = () => {
                                 Loading extraction details...
                               </div>
                             ) : (
-                              <div className="space-y-4">
+                              <div className="space-y-6">
                                 <div className="grid grid-cols-2 gap-4 border border-slate-800 bg-slate-900/40 p-3 rounded-lg">
                                   <div>
                                      <p className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-1">Source Constraints</p>
@@ -478,7 +478,32 @@ const Discovery = () => {
                                   </div>
                                 </div>
 
-                                <h4 className="text-xs font-bold uppercase tracking-widest text-slate-400 mt-2">Processed Items & Status</h4>
+                                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                                  <div className="glass p-3 rounded-xl border border-slate-800 flex flex-col items-center justify-center text-center">
+                                    <p className="text-[9px] font-black uppercase tracking-widest text-slate-500 mb-1">Discovered</p>
+                                    <p className="text-lg font-bold text-slate-200">{runDetails.candidates?.length || 0}</p>
+                                  </div>
+                                  <div className="glass p-3 rounded-xl border border-slate-800 flex flex-col items-center justify-center text-center">
+                                    <p className="text-[9px] font-black uppercase tracking-widest text-blue-500 mb-1">Under Review</p>
+                                    <p className="text-lg font-bold text-blue-400">
+                                      {runDetails.candidates?.filter(c => ['EXTRACTED', 'REVIEW_REQUIRED', 'ENRICHED'].includes(c.document_status)).length || 0}
+                                    </p>
+                                  </div>
+                                  <div className="glass p-3 rounded-xl border border-slate-800 flex flex-col items-center justify-center text-center">
+                                    <p className="text-[9px] font-black uppercase tracking-widest text-emerald-500 mb-1">Validated</p>
+                                    <p className="text-lg font-bold text-emerald-400">
+                                      {runDetails.candidates?.filter(c => c.document_status === 'COMPLETED').length || 0}
+                                    </p>
+                                  </div>
+                                  <div className="glass p-3 rounded-xl border border-slate-800 flex flex-col items-center justify-center text-center">
+                                    <p className="text-[9px] font-black uppercase tracking-widest text-rose-500 mb-1">Processing Debt</p>
+                                    <p className="text-lg font-bold text-rose-400">
+                                      {runDetails.candidates?.filter(c => c.document_status === 'FAILED').length || 0}
+                                    </p>
+                                  </div>
+                                </div>
+
+                                <h4 className="text-xs font-bold uppercase tracking-widest text-slate-400 mt-2">Clinical Extraction Items</h4>
                                 {(!runDetails?.candidates || runDetails.candidates.length === 0) ? (
                                   <p className="text-xs text-slate-600 italic">No candidates recorded yet for this run.</p>
                                 ) : (

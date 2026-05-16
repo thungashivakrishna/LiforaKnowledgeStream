@@ -9,6 +9,7 @@ class LibraryFactResponse(BaseModel):
     predicate: str | None = None
     object: str | None = None
     confidence: float | None = None
+    validation_status: str | None = None
 
     class Config:
         from_attributes = True

@@ -98,6 +98,9 @@ class DiscoveryService:
             
         # 2. Get filter profile (if any)
         profile_data = {}
+        topics = []
+        max_candidates = 50
+        
         if run.filter_profile_id:
             res = await self.session.execute(
                 select(DiscoveryFilterProfile).where(DiscoveryFilterProfile.id == run.filter_profile_id)
@@ -107,6 +110,8 @@ class DiscoveryService:
                 profile_data = {
                     "per_source_limit": profile.per_source_limit,
                 }
+                topics = profile.topics or []
+                max_candidates = profile.max_candidates or 50
 
         # 3. Start workflow
         payload = {
@@ -114,7 +119,9 @@ class DiscoveryService:
             "mode": run.mode,
             "filter_profile": profile_data,
             "sources": source_data,
-            "framework_scope": run.framework_scope.get("frameworks", []) if run.framework_scope else []
+            "frameworks": run.framework_scope.get("frameworks", []) if run.framework_scope else [],
+            "topics": topics,
+            "max_candidates": max_candidates
         }
         
         await client.start_workflow(
@@ -127,29 +134,31 @@ class DiscoveryService:
     async def terminate_run(self, run_id: uuid.UUID):
         from temporalio.client import Client
         from ks.config.settings import get_settings
+        from ks.domain.models import CandidateDiscoveryRun
+        from ks.domain.enums import RunStatus
         
         settings = get_settings()
-        client = await Client.connect(settings.temporal.address)
         
-        workflow_id = f"discovery-run-{run_id}"
+        # 1. Update Database Status first to ensure UI reflects termination intent
+        result = await self.session.execute(
+            select(CandidateDiscoveryRun).where(CandidateDiscoveryRun.id == run_id)
+        )
+        run = result.scalar_one_or_none()
+        if run and run.status == RunStatus.RUNNING:
+            run.status = RunStatus.FAILED
+            run.error_message = "Terminated by user"
+            await self.session.flush()
+        
+        # 2. Attempt to terminate the actual Temporal workflow
         try:
+            client = await Client.connect(settings.temporal.address)
+            workflow_id = f"discovery-run-{run_id}"
             handle = client.get_workflow_handle(workflow_id)
             await handle.terminate(reason="User requested termination via UI")
-            
-            # Optionally update DB status immediately
-            from ks.domain.models import CandidateDiscoveryRun
-            from ks.domain.enums import RunStatus
-            result = await self.session.execute(
-                select(CandidateDiscoveryRun).where(CandidateDiscoveryRun.id == run_id)
-            )
-            run = result.scalar_one_or_none()
-            if run and run.status == RunStatus.RUNNING:
-                run.status = RunStatus.FAILED
-                run.error_message = "Terminated by user"
-                await self.session.flush()
         except Exception as e:
-            # If workflow already finished, just ignore
-            pass
+            # If workflow already finished or connection fails, we've already updated the DB
+            import logging
+            logging.warning(f"Workflow termination skipped or failed for {run_id}: {str(e)}")
 
     async def get_run(self, run_id: uuid.UUID) -> CandidateDiscoveryRun:
         result = await self.session.execute(

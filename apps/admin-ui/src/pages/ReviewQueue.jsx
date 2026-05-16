@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import axios from 'axios';
+import { clsx } from 'clsx';
 import { ShieldAlert, Check, X, Edit3, Save, Trash2, RefreshCw, Star, Info } from 'lucide-react';
 
 const ReviewQueue = () => {
@@ -8,6 +9,7 @@ const ReviewQueue = () => {
   const [editingId, setEditingId] = useState(null);
   const [editForm, setEditForm] = useState({ subject: '', predicate: '', object: '', fact_text: '' });
   const [error, setError] = useState(null);
+  const [showValidated, setShowValidated] = useState(false);
 
   const fetchFacts = async () => {
     setLoading(true);
@@ -60,6 +62,16 @@ const ReviewQueue = () => {
     }
   };
 
+  const handleApprove = async (id) => {
+    try {
+      await axios.post(`/api/v1/graph/sync/fact/${id}`);
+      fetchFacts();
+    } catch (err) {
+      console.error(err);
+      alert("Failed to synchronize fact to Knowledge Graph.");
+    }
+  };
+
   return (
     <div className="max-w-6xl mx-auto space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500">
       <div className="flex items-center justify-between">
@@ -72,13 +84,24 @@ const ReviewQueue = () => {
             Human-in-the-Loop workspace. Clinically audit, edit, or reject AI-extracted facts before finalizing synchronization.
           </p>
         </div>
-        <button 
-          onClick={fetchFacts}
-          className="bg-slate-900 hover:bg-slate-800 text-slate-300 px-4 py-2 rounded-xl border border-slate-800 flex items-center gap-2 transition-all"
-        >
-          <RefreshCw className="w-4 h-4" />
-          Refresh
-        </button>
+        <div className="flex items-center gap-4">
+          <label className="flex items-center gap-2 cursor-pointer bg-slate-900 border border-slate-800 px-4 py-2 rounded-xl text-sm text-slate-400 hover:text-slate-200 transition-all">
+            <input 
+              type="checkbox" 
+              checked={showValidated} 
+              onChange={() => setShowValidated(!showValidated)}
+              className="rounded border-slate-800 bg-slate-950 text-brand-500 focus:ring-brand-500"
+            />
+            Show Validated
+          </label>
+          <button 
+            onClick={fetchFacts}
+            className="bg-slate-900 hover:bg-slate-800 text-slate-300 px-4 py-2 rounded-xl border border-slate-800 flex items-center gap-2 transition-all"
+          >
+            <RefreshCw className="w-4 h-4" />
+            Refresh
+          </button>
+        </div>
       </div>
 
       {error && (
@@ -100,12 +123,14 @@ const ReviewQueue = () => {
         </div>
       ) : (
         <div className="grid gap-6">
-          {facts.map((fact) => (
+          {facts
+            .filter(f => showValidated || f.validation_status !== 'VALIDATED')
+            .map((fact) => (
             <div 
               key={fact.id} 
               className={`bg-slate-900 border rounded-2xl p-6 transition-all ${
                 editingId === fact.id ? 'border-brand-500 shadow-lg shadow-brand-500/5' : 'border-slate-800 hover:border-slate-700'
-              }`}
+              } ${fact.validation_status === 'VALIDATED' ? 'opacity-60 grayscale-[0.5]' : ''}`}
             >
               {editingId === fact.id ? (
                 <div className="space-y-4">
@@ -173,6 +198,12 @@ const ReviewQueue = () => {
                         <Star className="w-3.5 h-3.5 fill-amber-500" />
                         <span>{(fact.confidence * 100).toFixed(0)}% Confidence</span>
                       </div>
+                      {fact.validation_status === 'VALIDATED' && (
+                        <div className="flex items-center gap-1 text-[10px] text-emerald-400 bg-emerald-400/10 px-2 py-0.5 rounded border border-emerald-500/20 font-bold uppercase tracking-tighter">
+                          <Check className="w-3 h-3" />
+                          Validated & Synced
+                        </div>
+                      )}
                     </div>
 
                     <div className="text-slate-100 font-medium text-lg leading-relaxed">
@@ -196,22 +227,30 @@ const ReviewQueue = () => {
                   <div className="flex items-center gap-2 flex-shrink-0 border-t md:border-t-0 border-slate-800/50 pt-4 md:pt-0">
                     <button 
                       onClick={() => handleEdit(fact)}
-                      className="p-2.5 rounded-xl bg-slate-800/50 border border-slate-800 hover:border-slate-700 text-slate-400 hover:text-slate-200 transition-colors"
+                      disabled={fact.validation_status === 'VALIDATED'}
+                      className="p-2.5 rounded-xl bg-slate-800/50 border border-slate-800 hover:border-slate-700 text-slate-400 hover:text-slate-200 transition-colors disabled:opacity-30"
                       title="Edit Fact"
                     >
                       <Edit3 className="w-5 h-5" />
                     </button>
                     <button 
                       onClick={() => handleDelete(fact.id)}
-                      className="p-2.5 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-400 hover:bg-rose-500/20 transition-colors"
+                      disabled={fact.validation_status === 'VALIDATED'}
+                      className="p-2.5 rounded-xl bg-rose-500/10 border border-rose-500/20 text-rose-400 hover:bg-rose-500/20 transition-colors disabled:opacity-30"
                       title="Reject & Delete"
                     >
                       <Trash2 className="w-5 h-5" />
                     </button>
                     <button 
-                      onClick={() => alert("Approved and Synchronized with Neo4j!")}
-                      className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 hover:bg-emerald-500/20 transition-colors"
-                      title="Approve & Sync"
+                      onClick={() => handleApprove(fact.id)}
+                      disabled={fact.validation_status === 'VALIDATED'}
+                      className={clsx(
+                        "p-2.5 rounded-xl transition-colors disabled:opacity-100",
+                        fact.validation_status === 'VALIDATED' 
+                          ? "bg-emerald-500 text-emerald-950 border border-emerald-400" 
+                          : "bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 hover:bg-emerald-500/20"
+                      )}
+                      title={fact.validation_status === 'VALIDATED' ? "Already Synced" : "Approve & Sync"}
                     >
                       <Check className="w-5 h-5" />
                     </button>

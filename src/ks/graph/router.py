@@ -25,6 +25,19 @@ async def start_graph_sync(
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@router.post("/sync/fact/{fact_id}")
+async def sync_fact_to_graph(fact_id: uuid.UUID, db: AsyncSession = Depends(get_db_session)):
+    """Sync a specific validated fact to the graph database."""
+    service = GraphService(db)
+    try:
+        success = await service.sync_fact_to_graph(fact_id)
+        if not success:
+            raise HTTPException(status_code=404, detail="Fact not found or incomplete")
+        return {"message": "Fact successfully synchronized to Knowledge Graph"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/runs", response_model=dict)
 async def list_graph_runs(
     limit: int = Query(50, ge=1, le=200),
@@ -115,22 +128,87 @@ async def traverse_interventions(symptom: str, condition: str):
         await driver.close()
         raise HTTPException(status_code=500, detail=str(e))
 
-@router.post("/traversal/query")
-async def raw_cypher_query(cypher: dict):
-    """Run a custom Cypher traversal (Admin only)."""
+@router.get("/explorer/data")
+async def get_explorer_data(
+    q: str | None = Query(None),
+    type: str | None = Query(None),
+    framework: str | None = Query(None)
+):
+    """Fetches nodes and edges for the graph explorer UI with multi-dimensional filtering."""
     settings = get_settings()
     driver = AsyncGraphDatabase.driver(
         settings.neo4j.uri, 
         auth=(settings.neo4j.user, settings.neo4j.password)
     )
     
+    # Base query logic
+    where_clauses = []
+    params = {"q": q or ""}
+    
+    if q:
+        where_clauses.append("(toLower(n.name) CONTAINS toLower($q) OR toLower(n.value) CONTAINS toLower($q) OR toLower(n.title) CONTAINS toLower($q))")
+    
+    if framework and framework != "ALL":
+        where_clauses.append("n.framework = $framework")
+        params["framework"] = framework
+        
+    where_str = " WHERE " + " AND ".join(where_clauses) if where_clauses else ""
+    
+    # Handle Label (Type) filtering
+    label_filter = f":{type}" if type and type != "ALL" else ""
+    
+    query = f"""
+    MATCH (n{label_filter}){where_str}
+    OPTIONAL MATCH (n)-[r]-(m:Entity)
+    RETURN n, r, m
+    LIMIT 300
+    """
+    
     try:
         async with driver.session() as session:
-            result = await session.run(cypher.get("query", ""), **cypher.get("params", {}))
+            result = await session.run(query, **params)
             records = await result.data()
             
+        nodes_map = {}
+        links = []
+        
+        for record in records:
+            for key in ["n", "m"]:
+                node = record.get(key)
+                if not node: continue
+                
+                n_id = node.get("name") or node.get("value") or node.get("title") or node.get("id") or str(uuid.uuid4())
+                
+                if n_id not in nodes_map:
+                    # Get labels and find the most specific one (not 'Entity')
+                    labels = list(node.labels) if hasattr(node, 'labels') else []
+                    specific_type = next((l for l in labels if l != "Entity"), "Entity")
+                    
+                    nodes_map[n_id] = {
+                        "id": n_id,
+                        "label": node.get("name") or node.get("value") or node.get("title") or "Unknown",
+                        "type": specific_type,
+                        "properties": dict(node)
+                    }
+            
+            r = record.get("r")
+            if r:
+                source_node = record.get("n")
+                target_node = record.get("m")
+                if source_node and target_node:
+                    s_id = source_node.get("name") or source_node.get("value") or source_node.get("title")
+                    t_id = target_node.get("name") or target_node.get("value") or target_node.get("title")
+                    
+                    links.append({
+                        "source": s_id,
+                        "target": t_id,
+                        "type": r.type if hasattr(r, 'type') else "RELATED_TO"
+                    })
+                
         await driver.close()
-        return {"data": records}
+        return {"nodes": list(nodes_map.values()), "links": links}
     except Exception as e:
+        import logging
+        logging.error(f"EXPLORER_DATA_ERROR: {str(e)}")
         await driver.close()
         raise HTTPException(status_code=500, detail=str(e))
