@@ -61,10 +61,10 @@ async def main() -> None:
         )
         graph_activities = GraphActivities(neo4j_driver)
         
-        # 3. Create Worker
         worker = Worker(
             client,
             task_queue=settings.temporal.task_queue,
+            debug_mode=True,
             workflows=[
                 DiscoveryWorkflow, AcquisitionWorkflow, ExtractionWorkflow, 
                 RecursiveExtractionWorkflow, EnrichmentWorkflow, ChunkingWorkflow, 
@@ -94,6 +94,8 @@ async def main() -> None:
                 enrichment_activities.run_llm_enrichment,
                 enrichment_activities.persist_enrichment_results,
                 enrichment_activities.update_enrichment_status,
+                enrichment_activities.fetch_extracted_text,
+                enrichment_activities.verify_extraction_activity,
                 chunking_activities.ensure_qdrant_collection,
                 chunking_activities.fetch_text_and_metadata,
                 chunking_activities.split_and_embed,

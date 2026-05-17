@@ -451,7 +451,7 @@ const Discovery = () => {
                               </div>
                             ) : (
                               <div className="space-y-6">
-                                <div className="grid grid-cols-2 gap-4 border border-slate-800 bg-slate-900/40 p-3 rounded-lg">
+                                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 border border-slate-800 bg-slate-900/40 p-3 rounded-lg">
                                   <div>
                                      <p className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-1">Source Constraints</p>
                                      <div className="flex flex-wrap gap-1">
@@ -472,6 +472,18 @@ const Discovery = () => {
                                        ) : runDetails.framework_scope.frameworks.map(fw => (
                                           <span key={fw} className="text-[10px] bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 px-2 py-0.5 rounded">
                                             {fw.replace(/_/g, ' ')}
+                                          </span>
+                                       ))}
+                                     </div>
+                                  </div>
+                                  <div>
+                                     <p className="text-[10px] font-black uppercase tracking-widest text-slate-500 mb-1">Targeted Focus</p>
+                                     <div className="flex flex-wrap gap-1">
+                                       {(!runDetails.topics || runDetails.topics.length === 0) ? (
+                                          <span className="text-xs text-amber-400 px-2 bg-amber-500/10 border border-amber-500/20 rounded">Broad Extractor</span>
+                                       ) : runDetails.topics.map(topic => (
+                                          <span key={topic} className="text-[10px] bg-amber-500/10 text-amber-400 border border-amber-500/20 px-2 py-0.5 rounded">
+                                            {topic}
                                           </span>
                                        ))}
                                      </div>

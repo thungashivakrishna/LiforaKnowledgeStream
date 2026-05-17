@@ -88,6 +88,7 @@ class PaginatedCandidateResponse(BaseModel):
 class DiscoveryRunDetailResponse(DiscoveryRunResponse):
     source_scope: dict | None = None
     framework_scope: dict | None = None
+    topics: list[str] = Field(default_factory=list)
     candidates: list[CandidateDocumentResponse] = Field(default_factory=list)
 
 

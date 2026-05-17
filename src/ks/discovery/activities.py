@@ -35,15 +35,24 @@ class DiscoveryActivities:
         allow_patterns = payload.get("allow_patterns", [])
         block_patterns = payload.get("block_patterns", [])
         max_candidates = payload.get("max_candidates", 50)
-
+        topics = payload.get("topics", [])
+        
         logger.info(f"Starting discovery for {root_url} in mode {mode}")
 
-        # 1. Try sitemap first
-        candidates = await self._sitemap_discovery(root_url, allow_patterns, block_patterns)
+        candidates = []
         
-        # 2. If sitemap failed or found nothing, and mode is not generic, try path discovery
+        # 1. If topics are provided, attempt dynamic native search endpoint discovery first
+        if topics:
+            search_query = " ".join(topics)
+            candidates = await self._search_endpoint_discovery(root_url, search_query, allow_patterns, block_patterns, max_candidates, topics=topics, mode=mode)
+            
+        # 2. Try sitemap if native search didn't find anything
+        if not candidates:
+            candidates = await self._sitemap_discovery(root_url, allow_patterns, block_patterns, topics=topics, mode=mode)
+        
+        # 3. If sitemap failed or found nothing, try path discovery
         if not candidates and mode != DiscoveryMode.GENERIC:
-            candidates = await self._path_discovery(root_url, allow_patterns, block_patterns, max_candidates)
+            candidates = await self._path_discovery(root_url, allow_patterns, block_patterns, max_candidates, topics=topics, mode=mode)
 
         # 3. Final filtering and limit
         # Deduplicate and limit
@@ -59,7 +68,7 @@ class DiscoveryActivities:
         logger.info(f"Discovered {len(unique_candidates)} candidates for {root_url}")
         return unique_candidates
 
-    async def _sitemap_discovery(self, root_url: str, allow: list[str], block: list[str]) -> list[dict[str, Any]]:
+    async def _sitemap_discovery(self, root_url: str, allow: list[str], block: list[str], topics: list[str] | None = None, mode: DiscoveryMode | None = None) -> list[dict[str, Any]]:
         """Attempt to find and parse sitemap.xml."""
         sitemap_url = urljoin(root_url, "/sitemap.xml")
         try:
@@ -72,12 +81,12 @@ class DiscoveryActivities:
             soup = BeautifulSoup(resp.text, "xml")
             urls = [loc.text for loc in soup.find_all("loc")]
             
-            return self._filter_urls(urls, allow, block)
+            return self._filter_urls(urls, allow, block, topics, mode)
         except Exception as e:
             logger.warning(f"Sitemap discovery failed for {root_url}: {e}")
             return []
 
-    async def _path_discovery(self, root_url: str, allow: list[str], block: list[str], max_cand: int) -> list[dict[str, Any]]:
+    async def _path_discovery(self, root_url: str, allow: list[str], block: list[str], max_cand: int, topics: list[str] | None = None, mode: DiscoveryMode | None = None) -> list[dict[str, Any]]:
         """Simple breadth-first crawl to find links."""
         try:
             resp = await self.http_client.get(root_url, follow_redirects=True)
@@ -93,17 +102,112 @@ class DiscoveryActivities:
                 if urlparse(full_url).netloc == urlparse(root_url).netloc:
                     links.append(full_url)
             
-            return self._filter_urls(links, allow, block)
+            return self._filter_urls(links, allow, block, topics, mode)
         except Exception as e:
             logger.warning(f"Path discovery failed for {root_url}: {e}")
             return []
 
-    def _filter_urls(self, urls: list[str], allow: list[str], block: list[str]) -> list[dict[str, Any]]:
-        results = []
-        # Additional patterns to avoid index pages
-        index_patterns = ["encyclopedia_", "index.htm", "index.html", "/search?", "/archive/"]
+    async def _find_search_endpoint(self, root_url: str) -> tuple[str, str] | None:
+        """Find the native search endpoint and parameter name."""
+        try:
+            resp = await self.http_client.get(root_url, follow_redirects=True, timeout=5.0)
+            if resp.status_code != 200:
+                return None
+                
+            soup = BeautifulSoup(resp.text, "html.parser")
+            for form in soup.find_all("form"):
+                method = form.get("method", "get").lower()
+                if method == "get":
+                    for inp in form.find_all("input"):
+                        type_attr = inp.get("type", "text").lower()
+                        if type_attr in ["text", "search"]:
+                            name = inp.get("name")
+                            action = form.get("action", "")
+                            if name:
+                                return action, name
+            
+            # Common fallbacks if form parsing fails
+            return "/search", "q"
+        except Exception as e:
+            logger.warning(f"Failed to find search endpoint for {root_url}: {e}")
+            return None
+
+    async def _search_endpoint_discovery(self, root_url: str, query: str, allow: list[str], block: list[str], max_cand: int, topics: list[str] | None = None, mode: DiscoveryMode | None = None) -> list[dict[str, Any]]:
+        """Query the native search endpoint and parse results."""
+        endpoint_info = await self._find_search_endpoint(root_url)
+        if not endpoint_info:
+            return []
+            
+        action, param = endpoint_info
+        search_url = urljoin(root_url, action)
         
+        try:
+            resp = await self.http_client.get(search_url, params={param: query}, follow_redirects=True, timeout=10.0)
+            if resp.status_code != 200:
+                return []
+                
+            soup = BeautifulSoup(resp.text, "html.parser")
+            links = []
+            for a in soup.find_all("a", href=True):
+                href = a["href"]
+                full_url = urljoin(root_url, href)
+                if urlparse(full_url).netloc == urlparse(root_url).netloc:
+                    links.append(full_url)
+                    
+            logger.info(f"Native search for '{query}' on {root_url} found {len(links)} raw links.")
+            return self._filter_urls(links, allow, block, topics, mode, is_search_result=True)
+            
+        except Exception as e:
+            logger.warning(f"Native search failed for {root_url}: {e}")
+            return []
+
+    def _filter_urls(self, urls: list[str], allow: list[str], block: list[str], topics: list[str] | None = None, mode: DiscoveryMode | None = None, is_search_result: bool = False) -> list[dict[str, Any]]:
+        results = []
+        # Additional patterns to avoid index and directory pages
+        index_patterns = ["encyclopedia_", "index.htm", "index.html", "/search?", "/archive/", "/health-topics/"]
+        
+        # Smart clinical abbreviation/synonym expansion to avoid false negative filtering
+        synonym_map = {
+            "pcos": ["polycystic", "ovary", "ovarian", "syndrome"],
+            "ra": ["rheumatoid", "arthritis"],
+            "ibd": ["inflammatory", "bowel", "crohn", "colitis"],
+            "ibs": ["irritable", "bowel"],
+            "gerd": ["acid", "reflux", "esophageal"],
+            "copd": ["pulmonary", "lung", "bronchitis", "emphysema"],
+            "adhd": ["attention", "deficit", "hyperactivity"],
+            "asd": ["autism", "spectrum"],
+            "als": ["amyotrophic", "lateral", "sclerosis", "lou", "gehrig"],
+            "sle": ["lupus", "systemic", "erythematosus"],
+            "ms": ["multiple", "sclerosis"],
+            "t2d": ["type-2-diabetes", "type", "diabetes"],
+            "t1d": ["type-1-diabetes", "type", "diabetes"],
+            "polycystic ovary syndrome": ["pcos"],
+            "rheumatoid arthritis": ["ra"],
+        }
+        
+        # Prepare keyword match list if topics are present
+        focused_keywords = []
+        if topics:
+            for t in topics:
+                # Add the full topic string as a clean keyword if possible
+                clean_t = "".join(c for c in t.lower() if c.isalnum() or c == " ")
+                if clean_t in synonym_map:
+                    focused_keywords.extend(synonym_map[clean_t])
+                
+                for word in t.lower().split():
+                    clean_word = "".join(c for c in word if c.isalnum())
+                    if len(clean_word) >= 3:
+                        focused_keywords.append(clean_word)
+                        if clean_word in synonym_map:
+                            focused_keywords.extend(synonym_map[clean_word])
+            # Deduplicate keywords
+            focused_keywords = list(set(focused_keywords))
+
         for url in urls:
+            # 0. Skip fragment/anchor links entirely to avoid page-internal navigation jumps (e.g. #K, #A)
+            if "#" in url:
+                continue
+
             # 1. Block patterns from source config
             if any(p in url for p in block):
                 continue
@@ -119,11 +223,27 @@ class DiscoveryActivities:
             if allow and not any(p in url for p in allow):
                 continue
             
-            # 4. Simple scoring heuristic
+            # 4. If in FOCUSED or HYBRID mode, focused_keywords are active, and this is NOT a native/targeted search result,
+            # enforce keyword matching in URL path/query to restrict crawl scope.
+            if focused_keywords and mode in [DiscoveryMode.FOCUSED, DiscoveryMode.HYBRID] and not is_search_result:
+                url_lower = url.lower()
+                is_match = any(word in url_lower for word in focused_keywords)
+                if not is_match:
+                    logger.info(f"Skipping URL not matching focused keywords: {url}")
+                    continue
+            
+            # 5. Simple scoring heuristic
             score = 0.5
-            # Bonus for article-like paths
-            if any(p in url.lower() for p in ["/article/", "/condition/", "/guide/", "/protocol/", "/health-topics/"]):
+            # Bonus for article-like paths (note: removed '/health-topics/' to prevent directory listing inflation)
+            if any(p in url.lower() for p in ["/article/", "/condition/", "/guide/", "/protocol/"]):
                 score += 0.3
+            
+            # Bonus if topic keyword is explicitly present in the URL
+            if focused_keywords:
+                url_lower = url.lower()
+                if any(word in url_lower for word in focused_keywords):
+                    score += 0.2
+                    
             # Penalty for suspicious index-like long params
             if "?" in url and len(url.split("?")[1]) > 50:
                 score -= 0.2
@@ -358,6 +478,7 @@ class DiscoveryActivities:
         """Execute intent-driven search across configured providers."""
         query = payload.get("query", "")
         limit = payload.get("limit", 20)
+        domains = payload.get("domains", [])
         
         # We will use DuckDuckGo as fallback, and EuropePMC for scientific
         from ks.discovery.search import DuckDuckGoProvider, EuropePMCProvider
@@ -367,13 +488,25 @@ class DiscoveryActivities:
         
         results = []
         try:
-            # First fetch scientific
-            epmc_res = await epmc.search(query, limit=limit//2)
-            results.extend(epmc_res)
-            
-            # Then open web fallback
-            ddg_res = await ddg.search(query, limit=limit//2)
-            results.extend(ddg_res)
+            # If domains are specified, we only want to search those specific domains
+            # Note: EuropePMC doesn't easily support domain restriction for non-PMC domains via simple query, 
+            # so we focus on DuckDuckGo which supports site: filters natively.
+            if domains:
+                # Build domain query e.g. "(site:domain1 OR site:domain2) query"
+                sites_str = " OR ".join([f"site:{d}" for d in domains])
+                ddg_query = f"{query} {sites_str}"
+                
+                # We allocate all limit to DDG since EuropePMC might return out-of-domain results
+                ddg_res = await ddg.search(ddg_query, limit=limit)
+                results.extend(ddg_res)
+            else:
+                # First fetch scientific
+                epmc_res = await epmc.search(query, limit=limit//2)
+                results.extend(epmc_res)
+                
+                # Then open web fallback
+                ddg_res = await ddg.search(query, limit=limit//2)
+                results.extend(ddg_res)
             
         except Exception as e:
             logger.error(f"Targeted search failed: {e}")

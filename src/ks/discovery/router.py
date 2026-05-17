@@ -1,6 +1,7 @@
 """Discovery router — API endpoints for content discovery."""
 import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from apps.api.database import get_db_session
@@ -83,6 +84,16 @@ async def get_discovery_run(run_id: uuid.UUID, db: AsyncSession = Depends(get_db
         run = await service.get_run(run_id)
         candidates = await service.get_run_candidates(run_id)
         
+        topics = []
+        if run.filter_profile_id:
+            from ks.domain.models import DiscoveryFilterProfile
+            res = await db.execute(
+                select(DiscoveryFilterProfile).where(DiscoveryFilterProfile.id == run.filter_profile_id)
+            )
+            profile = res.scalar_one_or_none()
+            if profile:
+                topics = profile.topics or []
+        
         # Manually construct response to include candidates
         return {
             "id": run.id,
@@ -95,6 +106,7 @@ async def get_discovery_run(run_id: uuid.UUID, db: AsyncSession = Depends(get_db
             "created_at": run.created_at,
             "source_scope": run.source_scope,
             "framework_scope": run.framework_scope,
+            "topics": topics,
             "candidates": [
                 {
                     "id": c.id,
