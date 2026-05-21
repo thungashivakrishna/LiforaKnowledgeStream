@@ -1,15 +1,17 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
-import { 
+import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, Legend, ResponsiveContainer,
   PieChart, Pie, Cell, LineChart, Line
 } from 'recharts';
-import { Activity, Database, Clock, BarChart3 } from 'lucide-react';
+import { Activity, Database, Clock, BarChart3, DollarSign, AlertTriangle, Zap } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { clsx } from 'clsx';
+import { Link } from 'react-router-dom';
 
 const Dashboard = () => {
   const [enrichmentRuns, setEnrichmentRuns] = useState([]);
+  const [llmStats, setLlmStats] = useState({ spend: 0, fallbackRate: '—', cacheRate: '—', budgetPct: null });
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -23,9 +25,38 @@ const Dashboard = () => {
         setLoading(false);
       }
     };
-    
+
+    const fetchLlmStats = async () => {
+      try {
+        const [byStage, fallback, cacheHit, budget] = await Promise.allSettled([
+          axios.get('http://localhost:8000/api/v1/llm/spend/by-stage'),
+          axios.get('http://localhost:8000/api/v1/llm/fallback-rate'),
+          axios.get('http://localhost:8000/api/v1/llm/cache-hit-by-prompt'),
+          axios.get('http://localhost:8000/api/v1/llm/budget-config'),
+        ]);
+        const totalSpend = byStage.status === 'fulfilled'
+          ? byStage.value.data.reduce((s, r) => s + (r.cost_usd || 0), 0) : 0;
+        const fbRows = fallback.status === 'fulfilled' ? fallback.value.data : [];
+        const fbRate = fbRows.length
+          ? (fbRows.reduce((s, r) => s + r.fallback_rate_pct, 0) / fbRows.length).toFixed(1) : '—';
+        const cacheRows = cacheHit.status === 'fulfilled' ? cacheHit.value.data : [];
+        const cacheRate = cacheRows.length
+          ? (cacheRows.reduce((s, r) => s + r.hit_rate_pct, 0) / cacheRows.length).toFixed(1) : '—';
+        const budgetCfg = budget.status === 'fulfilled' ? budget.value.data : null;
+        setLlmStats({
+          spend: totalSpend,
+          fallbackRate: fbRate,
+          cacheRate,
+          budgetPct: budgetCfg ? Math.min(totalSpend / budgetCfg.daily_budget_usd * 100, 100).toFixed(0) : null,
+        });
+      } catch (e) {
+        console.error('Failed to fetch LLM stats:', e);
+      }
+    };
+
     fetchMetrics();
-    const interval = setInterval(fetchMetrics, 5000);
+    fetchLlmStats();
+    const interval = setInterval(() => { fetchMetrics(); fetchLlmStats(); }, 15000);
     return () => clearInterval(interval);
   }, []);
 
@@ -90,30 +121,64 @@ const Dashboard = () => {
 
       {/* Top Stats */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-        <StatCard 
-          title="Total Processed" 
-          value={completedRuns.length} 
+        <StatCard
+          title="Total Processed"
+          value={completedRuns.length}
           icon={Database}
-          subtitle="Documents successfully enriched" 
+          subtitle="Documents successfully enriched"
         />
-        <StatCard 
-          title="DeepSeek Tokens" 
-          value={(modelStats['deepseek/deepseek-chat']?.totalTokens || 0).toLocaleString()} 
+        <StatCard
+          title="DeepSeek Tokens"
+          value={(modelStats['deepseek/deepseek-chat']?.totalTokens || 0).toLocaleString()}
           icon={Activity}
-          subtitle={`Across ${modelStats['deepseek/deepseek-chat']?.count || 0} documents`} 
+          subtitle={`Across ${modelStats['deepseek/deepseek-chat']?.count || 0} documents`}
         />
-        <StatCard 
-          title="OpenAI Tokens" 
-          value={(modelStats['gpt-4o-mini']?.totalTokens || 0).toLocaleString()} 
+        <StatCard
+          title="OpenAI Tokens"
+          value={(modelStats['gpt-4o-mini']?.totalTokens || 0).toLocaleString()}
           icon={Activity}
-          subtitle={`Across ${modelStats['gpt-4o-mini']?.count || 0} documents`} 
+          subtitle={`Across ${modelStats['gpt-4o-mini']?.count || 0} documents`}
         />
-        <StatCard 
-          title="Pipeline Failures" 
-          value={failedRuns.length} 
+        <StatCard
+          title="Pipeline Failures"
+          value={failedRuns.length}
           icon={Activity}
-          subtitle="Errors during processing" 
+          subtitle="Errors during processing"
         />
+      </div>
+
+      {/* LLM Gateway KPIs */}
+      <div>
+        <div className="flex items-center justify-between mb-3">
+          <h2 className="text-lg font-semibold text-white">LLM Gateway</h2>
+          <Link to="/llm-gateway" className="text-brand-400 text-sm hover:underline">View full dashboard →</Link>
+        </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+          <StatCard
+            title="Total LLM Spend"
+            value={`$${llmStats.spend.toFixed(4)}`}
+            icon={DollarSign}
+            subtitle="all time"
+          />
+          <StatCard
+            title="Fallback Rate"
+            value={`${llmStats.fallbackRate}%`}
+            icon={AlertTriangle}
+            subtitle="avg across all stages"
+          />
+          <StatCard
+            title="Cache Hit Rate"
+            value={`${llmStats.cacheRate}%`}
+            icon={Zap}
+            subtitle="avg across all prompts"
+          />
+          <StatCard
+            title="Budget Used Today"
+            value={llmStats.budgetPct !== null ? `${llmStats.budgetPct}%` : '—'}
+            icon={BarChart3}
+            subtitle="of daily limit"
+          />
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">

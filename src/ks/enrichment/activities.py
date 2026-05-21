@@ -5,11 +5,12 @@ import logging
 import uuid
 from datetime import datetime
 
-import litellm
 from minio import Minio
 from temporalio import activity
 
 from ks.common import redis_client
+from ks.common.llm_gateway import complete as gateway_complete
+from ks.common.llm_types import LLMBudgetExceeded
 from ks.config.settings import get_settings
 from ks.domain.enums import RunStatus, Framework, TagType, AssignedBy, ValidationStatus
 from ks.domain.models import EnrichmentRun, KnowledgeSummary, KnowledgeTag, KnowledgeFact
@@ -115,20 +116,18 @@ class EnrichmentActivities:
         """
 
         try:
-            api_key = self.settings.model.primary_api_key
-            resp = litellm.completion(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                response_format={"type": "json_object"},
-                api_key=api_key,
-                temperature=0
+            resp = await gateway_complete(
+                "enrichment.framework_detection.v1",
+                {"text": text},
+                stage="enrichment",
+                run_id=payload.get("run_id"),
+                document_id=payload.get("document_id"),
             )
+            if resp.status != "success":
+                return {"success": False, "frameworks": ["PREVENTIVE_MEDICINE"], "error": resp.status}
 
-            output = json.loads(resp.choices[0].message.content)
-            # Default to at least one if empty
-            frameworks = output.get("frameworks", ["PREVENTIVE_MEDICINE"])
-            if not frameworks:
-                 frameworks = ["PREVENTIVE_MEDICINE"]
+            output = json.loads(resp.content)
+            frameworks = output.get("frameworks", ["PREVENTIVE_MEDICINE"]) or ["PREVENTIVE_MEDICINE"]
 
             result = {"success": True, "frameworks": frameworks}
             if fw_cache_key:
@@ -159,171 +158,37 @@ class EnrichmentActivities:
             except Exception as e:
                 return {"success": False, "error": f"Payload hydration failed: {e}"}
 
-            model = payload.get("model", self.settings.model.primary_model)
-
-            # Truncate text to avoid overloading prompt context
-            truncated_text = text[:25000]
-
             source_type = payload.get("source_type", "GENERAL_HEALTH")
-            is_clinical = source_type in ["PRESCRIPTION_SOURCE", "CLINICAL_REPORT_SOURCE"]
-
-            clinical_context = ""
-            if is_clinical:
-                clinical_context = """
-            SPECIALIZED CLINICAL MODE ENABLED:
-            - Focus on RX IDENTIFIERS: Active ingredients, Brand names, and Medication Classes.
-            - Focus on CLINICAL MARKERS: Reference ranges (e.g., "Normal: 70-100 mg/dL"), units of measure, and test names.
-            - Precise DOSAGE extraction: Capture frequency (BID, QD), strength, and administration route.
-            - CONTRADICTIONS: Be extremely granular about drug-drug or drug-condition interactions.
-            """
-
             framework = payload.get("framework")
-            framework_context = ""
-
-            if framework == "NUTRITION_SCIENCE":
-                framework_context = """
-            SPECIALIZED NUTRITION AGENT ACTIVE:
-            Focus on:
-            - MACROS & MICROS: Precise numeric components (e.g., "Fiber: 10g").
-            - GLYCEMIC IMPACT: Insulogenic load, metabolic response.
-            - PREPARATION METHOD: How cooking/raw state impacts bioavailability.
-            - COMBINATION SYNERGY: Food pairing benefits (e.g., "Turmeric + Black pepper").
-            """
-            elif framework == "PHYSICAL_ACTIVITY_SCIENCE":
-                framework_context = """
-            SPECIALIZED MOVEMENT AGENT ACTIVE:
-            Focus on:
-            - EXERTION INTENSITY: Heart rate zones, VO2 max impact, RPE.
-            - MODALITY: Aerobic vs Anaerobic mechanics.
-            - RECOVERY: Hypertrophy markers, rest cycles, cortisol impact.
-            - BIOMECHANICS: Kinematic safety cues and postural adaptations.
-            """
-            elif framework == "PREVENTIVE_MEDICINE":
-                framework_context = """
-            SPECIALIZED DIAGNOSTIC AGENT ACTIVE:
-            Focus on:
-            - BIOMARKERS: LDL, HbA1c, CRP, fasting glucose benchmarks.
-            - SCREENING GUIDELINES: Age/risk thresholds for intervention.
-            - PROPHYLAXIS: Preventative thresholds and risk reduction ratios.
-            """
-            elif framework == "HOLISTIC_TRADITIONAL_SYSTEMS":
-                framework_context = """
-            SPECIALIZED TRADITIONAL SYSTEMS AGENT ACTIVE:
-            Focus on:
-            - ADAPTOGENS & HERBS: Herbal classification, tonic effects.
-            - GUT-BRAIN AXIS: Microbiome, digestive fire, or systemic connection.
-            - CONSTITUTIONAL EFFECTS: Warming/cooling properties or systemic balance impacts.
-            """
-            elif framework == "DIAGNOSTICS_AND_LABS":
-                framework_context = """
-            SPECIALIZED DIAGNOSTIC & LAB AGENT ACTIVE:
-            Focus on:
-            - REFERENCE INTERVALS: Normal bounds, optimal vs sub-optimal tiers, and panic values.
-            - TEST METHODOLOGY: Fasting required, imaging modalities (MRI, CT, Ultrasound), measurement units.
-            - CLINICAL SIGNIFICANCE: What elevated/suppressed levels indicate (e.g., High TSH = Hypothyroidism).
-            """
-            elif framework == "PHARMACOLOGY_MEDICINE":
-                framework_context = """
-            SPECIALIZED PHARMACOLOGICAL AGENT ACTIVE:
-            Focus on:
-            - MECHANISM OF ACTION: Agonist/Antagonist relationships, biological pathways.
-            - THERAPEUTIC INDEX: Dosage safety margin, half-life, pharmacokinetics.
-            - ADVERSE REACTIONS: Common side effects versus severe toxicity warnings.
-            - CONTRAINDICATIONS: Absolute and relative restrictions based on comorbidities.
-            """
-
-            prompt = f"""
-        You are a world-class health knowledge graph extractor. Your goal is to convert medical text into high-fidelity structured intelligence.
-        {clinical_context}
-        {framework_context}
-
-        Extract the following attributes if present in the text:
-        - CONDITIONS & SYMPTOMS: Medical conditions, diseases, and their associated symptoms.
-        - INTERVENTIONS: Medications, procedures, or lifestyle changes.
-        - DOSAGE & DURATION: Specific amounts (e.g., "500mg") and timeframes (e.g., "for 10 days").
-        - FOOD & NUTRIENTS: Specific foods, diets, or nutritional markers (e.g., "Vitamin B12").
-        - POPULATION APPLICABILITY: Who is this for? (e.g., "Adults", "Pregnant women", "Athletes").
-        - BENEFITS & CAUTIONS: Positive outcomes and potential risks or side effects.
-        - EVIDENCE CATEGORY: Clinical evidence levels (e.g., "Systematic Review", "Expert Opinion").
-        - CONTRAINDICATION MARKERS: When should this NOT be used?
-
-        Guidelines for Facts:
-        - Format every insight as a Subject-Predicate-Object (S-P-O) triple.
-        - Subject: The main entity (e.g., "Lisinopril").
-        - Predicate: The relationship (e.g., "prescribed for", "dosage is", "should be avoided in").
-        - Object: The value or target (e.g., "Hypertension", "10mg daily", "Kidney disease").
-
-        Text:
-        {truncated_text}
-        """
 
             try:
-                logger.info(f"Running LLM enrichment using model: {model}")
+                logger.info("Running LLM enrichment via gateway")
 
-                # Route the correct API key based on the model being called
-                m = model.lower()
-                if "deepseek" in m:
-                    api_key = self.settings.model.primary_api_key
-                    api_base = self.settings.model.primary_api_base
-                    # DeepSeek supports JSON mode but not JSON Schema response_format
-                    # Inject schema instructions into the prompt
-                    schema_hint = (
-                        '\n\nReturn ONLY valid JSON matching this schema (no markdown, no explanation):\n'
-                        '{"summary": "string", "primary_framework": "one of NUTRITION|EXERCISE|SLEEP|STRESS|HYDRATION|SUPPLEMENTATION|RECOVERY|GENERAL|PREVENTIVE_MEDICINE", '
-                        '"secondary_frameworks": ["..."], "topics": ["..."], '
-                        '"conditions": ["..."], "symptoms": ["..."], "interventions": ["..."], "nutrients": ["..."], "populations": ["..."], '
-                        '"facts": [{"fact_text": "...", "subject": "...", "predicate": "...", "object_value": "...", "confidence": 0.9, "source_span": "..."}]}'
-                    )
-                    full_prompt = prompt + schema_hint
-                    call_kwargs = dict(
-                        model=model,
-                        messages=[{"role": "user", "content": full_prompt}],
-                        response_format={"type": "json_object"},
-                        api_key=api_key,
-                        api_base=api_base
-                    )
-                elif "gpt" in m or "openai" in m:
-                    api_key = self.settings.model.tertiary_api_key
-                    # OpenAI gpt-4o-mini supports full structured output with Pydantic class
-                    call_kwargs = dict(
-                        model=model,
-                        messages=[{"role": "user", "content": prompt}],
-                        response_format=LLMEnrichmentOutput,
-                        api_key=api_key
-                    )
-                else:
-                    api_key = self.settings.model.primary_api_key
-                    call_kwargs = dict(
-                        model=model,
-                        messages=[{"role": "user", "content": prompt}],
-                        response_format={"type": "json_object"},
-                        api_key=api_key
-                    )
+                response = await gateway_complete(
+                    "enrichment.extraction.v1",
+                    {
+                        "text": text,
+                        "framework": framework,
+                        "source_type": source_type,
+                    },
+                    stage="enrichment",
+                    run_id=payload.get("run_id"),
+                    document_id=payload.get("document_id"),
+                )
 
-                response = litellm.completion(**call_kwargs)
+                if response.status not in ("success", "cached"):
+                    return {"success": False, "error": response.status}
 
-                # Litellm parses it back if using structured output, otherwise we parse JSON
-                output_json = response.choices[0].message.content
-
+                output_json = response.content
                 try:
-                    # Some models return pure JSON strings, others return objects depending on litellm version
-                    if isinstance(output_json, str):
-                        parsed_output = json.loads(output_json)
-                    else:
-                        parsed_output = output_json
-
-                    # Extract token usage
-                    usage = getattr(response, "usage", None)
-                    usage_data = {}
-                    if usage:
-                        usage_data = {
-                            "prompt_tokens": getattr(usage, "prompt_tokens", 0),
-                            "completion_tokens": getattr(usage, "completion_tokens", 0),
-                            "total_tokens": getattr(usage, "total_tokens", 0)
-                        }
-
-                    return {"success": True, "enrichment": parsed_output, **usage_data}
-
+                    parsed_output = json.loads(output_json) if isinstance(output_json, str) else output_json
+                    return {
+                        "success": True,
+                        "enrichment": parsed_output,
+                        "prompt_tokens": response.usage.prompt_tokens,
+                        "completion_tokens": response.usage.completion_tokens,
+                        "total_tokens": response.usage.total_tokens,
+                    }
                 except json.JSONDecodeError as e:
                     logger.error(f"LLM returned invalid JSON: {output_json}")
                     return {"success": False, "error": f"Invalid JSON returned by LLM: {e}"}
@@ -555,13 +420,15 @@ class EnrichmentActivities:
         )
 
         try:
-            resp = litellm.completion(
-                model="deepseek/deepseek-chat",
-                messages=[{"role": "user", "content": prompt}],
-                response_format={"type": "json_object"},
-                api_key=self.settings.model.primary_api_key
+            resp = await gateway_complete(
+                "enrichment.verification.v1",
+                {"source_text": source_text, "facts": facts},
+                stage="enrichment",
+                cache=False,
             )
-            report = json.loads(resp.choices[0].message.content)
+            if resp.status not in ("success", "cached"):
+                return {"success": False, "error": resp.status}
+            report = json.loads(resp.content)
             return {"success": True, "report": report.get("verifications", [])}
         except Exception as e:
             logger.error(f"Verification activity failed: {e}")

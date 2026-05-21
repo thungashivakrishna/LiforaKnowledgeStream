@@ -467,6 +467,32 @@ class AdminAuditLog(Base):
     __table_args__ = (Index("ix_admin_audit_log_entity", "entity_type", "entity_id"),)
 
 
+class LLMCall(Base):
+    __tablename__ = "llm_call"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    stage: Mapped[str] = mapped_column(String(50), nullable=False)
+    run_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    document_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True)
+    prompt_id: Mapped[str] = mapped_column(String(255), nullable=False)
+    model_used: Mapped[str] = mapped_column(String(255), nullable=False)
+    model_requested: Mapped[str] = mapped_column(String(255), nullable=False)
+    fallback_depth: Mapped[int] = mapped_column(Integer, default=0)
+    prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    total_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    cost_usd: Mapped[float] = mapped_column(Float, default=0.0)
+    latency_ms: Mapped[int] = mapped_column(Integer, default=0)
+    cache_hit: Mapped[bool] = mapped_column(Boolean, default=False)
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default="success")
+
+    __table_args__ = (
+        Index("ix_llm_call_stage_created", "stage", "created_at"),
+        Index("ix_llm_call_document_id", "document_id"),
+    )
+
+
 class DiscoveryFilterProfile(Base):
     __tablename__ = "discovery_filter_profile"
 

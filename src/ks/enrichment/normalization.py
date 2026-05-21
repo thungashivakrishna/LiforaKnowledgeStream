@@ -1,16 +1,12 @@
 """Normalization service — standardizes clinical entities for the knowledge graph."""
-import logging
 import json
-import litellm
-from ks.config.settings import get_settings
+import logging
+
+from ks.common.llm_gateway import complete as gateway_complete
 
 logger = logging.getLogger(__name__)
 
 class EntityNormalizer:
-    def __init__(self):
-        self.settings = get_settings()
-        # In a production system, this might also query a local dictionary (MeSH, UMLS)
-        # for high-speed lookups before falling back to an LLM.
 
     async def normalize_entity(self, entity_name: str, entity_type: str = "GENERAL") -> str:
         """
@@ -20,25 +16,15 @@ class EntityNormalizer:
         if not entity_name or len(entity_name) < 2:
             return entity_name
 
-        prompt = f"""
-        You are a clinical ontology expert. Map the following clinical entity to its canonical, scientific name.
-        If it is already canonical or you are unsure, return the original name.
-        
-        Entity: "{entity_name}"
-        Type Context: {entity_type}
-        
-        Return valid JSON: {{"canonical_name": "Standard Name"}}
-        """
-
         try:
-            resp = litellm.completion(
-                model=self.settings.model.secondary_model, # Use a faster/cheaper model for normalization
-                messages=[{"role": "user", "content": prompt}],
-                response_format={"type": "json_object"},
-                api_key=self.settings.model.primary_api_key, # Assuming same provider or key
-                temperature=0
+            resp = await gateway_complete(
+                "normalization.canonical.v1",
+                {"entity_name": entity_name, "entity_type": entity_type},
+                stage="enrichment",
             )
-            output = json.loads(resp.choices[0].message.content)
+            if resp.status not in ("success", "cached"):
+                return entity_name
+            output = json.loads(resp.content)
             canonical = output.get("canonical_name", entity_name)
             
             if canonical != entity_name:

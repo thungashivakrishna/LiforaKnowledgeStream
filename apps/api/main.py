@@ -33,6 +33,7 @@ from ks.chunking.router import router as chunking_router
 from ks.graph.router import router as graph_router
 from ks.library.router import router as library_router
 from ks.system.router import router as system_router
+from apps.api.routers.llm_usage import router as llm_usage_router
 
 app.include_router(source_router, prefix=settings.app.api_prefix)
 app.include_router(discovery_router, prefix=settings.app.api_prefix)
@@ -43,6 +44,7 @@ app.include_router(chunking_router, prefix=settings.app.api_prefix)
 app.include_router(graph_router, prefix=settings.app.api_prefix)
 app.include_router(library_router, prefix=settings.app.api_prefix)
 app.include_router(system_router, prefix=settings.app.api_prefix)
+app.include_router(llm_usage_router, prefix=settings.app.api_prefix)
 
 
 @app.on_event("startup")

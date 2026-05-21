@@ -7,13 +7,13 @@ from datetime import datetime, timezone
 
 import httpx
 import xxhash
-import litellm
 from minio import Minio
 from sqlalchemy import select
 from temporalio import activity
 
 from apps.api.database import AsyncSessionFactory
 from ks.common import redis_client
+from ks.common.llm_gateway import complete as gateway_complete
 from ks.config.settings import get_settings
 from ks.domain.enums import DocumentStatus, RunStatus
 from ks.domain.models import DocumentRegistry, DocumentVersion, FetchRun
@@ -70,20 +70,19 @@ class AcquisitionActivities:
         """
 
         try:
-            response = litellm.completion(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                response_format=IntelligenceAuditOutput,
-                api_key=api_key
+            response = await gateway_complete(
+                "acquisition.intelligence_audit.v1",
+                {"url": url, "content": content},
+                stage="acquisition",
             )
-
-            output = json.loads(response.choices[0].message.content)
+            if response.status not in ("success", "cached"):
+                return {"success": False, "audit": {"is_high_value": True, "reason": f"Audit error: {response.status}"}}
+            output = json.loads(response.content)
             result = {"success": True, "audit": output}
             await redis_client.set_cache(audit_cache_key, result, ttl=redis_client.DEDUP_TTL)
             return result
         except Exception as e:
             logger.error(f"Intelligence audit failed: {e}")
-            # Fallback to high value if audit fails to be safe
             return {"success": False, "audit": {"is_high_value": True, "reason": f"Audit error: {e}"}}
 
     @activity.defn

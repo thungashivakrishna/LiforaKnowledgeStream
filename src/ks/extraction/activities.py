@@ -10,11 +10,11 @@ from bs4 import BeautifulSoup
 from minio import Minio
 from temporalio import activity
 from PIL import Image
-import litellm
 from docling.datamodel.base_models import DocumentStream, InputFormat
 from docling.datamodel.pipeline_options import PdfPipelineOptions
 from docling.document_converter import DocumentConverter, PdfFormatOption
 
+from ks.common.llm_gateway import complete as gateway_complete
 from ks.config.settings import get_settings
 from ks.domain.enums import RunStatus, ExtractionQuality
 from ks.domain.models import ExtractionRun
@@ -95,13 +95,13 @@ class ExtractionActivities:
             # 3. LLM Enhancement (Optional - note using deeper model if specified but fallback to deepseek logic is in enrichment usually)
             if use_llm and len(extracted_text) > 10:
                 try:
-                    prompt = f"Read this clean markdown or text, preserve all medical details, and format it cleanly with appropriate headers:\n\n{extracted_text[:8000]}"
-                    resp = litellm.completion(
-                        model="deepseek/deepseek-chat",
-                        messages=[{"role": "user", "content": prompt}],
-                        api_key=self.settings.model.primary_api_key
+                    resp = await gateway_complete(
+                        "extraction.full_cleanup.v1",
+                        {"text": extracted_text},
+                        stage="extraction",
                     )
-                    extracted_text = resp.choices[0].message.content
+                    if resp.status in ("success", "cached"):
+                        extracted_text = resp.content
                 except Exception as e:
                     logger.warning(f"LLM inline enhancement failed: {e}")
 
@@ -178,13 +178,14 @@ class ExtractionActivities:
         )
         
         try:
-            resp = litellm.completion(
-                model="deepseek/deepseek-chat",
-                messages=[{"role": "user", "content": prompt}],
-                api_key=self.settings.model.primary_api_key
+            resp = await gateway_complete(
+                "extraction.chunk_enhance.v1",
+                {"chunk_text": chunk_text},
+                stage="extraction",
             )
-            enhanced = resp.choices[0].message.content
-            return {"success": True, "enhanced_text": enhanced, "chunk_index": chunk_index}
+            if resp.status not in ("success", "cached"):
+                return {"success": False, "error": resp.status, "chunk_index": chunk_index}
+            return {"success": True, "enhanced_text": resp.content, "chunk_index": chunk_index}
         except Exception as e:
             logger.warning(f"Chunk enhancement failed for index {chunk_index}: {e}")
             return {"success": False, "error": str(e), "chunk_index": chunk_index}
@@ -271,13 +272,15 @@ class ExtractionActivities:
         )
         
         try:
-            resp = litellm.completion(
-                model="deepseek/deepseek-chat",
-                messages=[{"role": "user", "content": prompt}],
-                response_format={"type": "json_object"},
-                api_key=self.settings.model.primary_api_key
+            resp = await gateway_complete(
+                "enrichment.verification.v1",
+                {"source_text": source_text, "facts": facts},
+                stage="extraction",
+                cache=False,
             )
-            report = json.loads(resp.choices[0].message.content)
+            if resp.status not in ("success", "cached"):
+                return {"success": False, "error": resp.status}
+            report = json.loads(resp.content)
             return {"success": True, "report": report.get("verifications", [])}
         except Exception as e:
             logger.error(f"Verification activity failed: {e}")

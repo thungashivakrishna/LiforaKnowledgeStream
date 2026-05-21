@@ -107,6 +107,35 @@ class ModelSettings(BaseSettings):
     confidence_fallback_threshold: float = Field(default=0.6, alias="MODEL_CONFIDENCE_THRESHOLD")
     max_retries: int = Field(default=3, alias="MODEL_MAX_RETRIES")
 
+    # Gateway routing chains (comma-separated model strings)
+    fallback_chain_csv: str = Field(
+        default="deepseek/deepseek-chat,gemini/gemini-1.5-pro,gpt-4o-mini",
+        alias="LLM_FALLBACK_CHAIN",
+    )
+    fast_chain_csv: str = Field(
+        default="gpt-4o-mini,gemini/gemini-1.5-flash",
+        alias="LLM_FAST_CHAIN",
+    )
+
+    # Budget enforcement
+    daily_budget_usd: float = Field(default=50.0, alias="LLM_DAILY_BUDGET_USD")
+    per_doc_budget_usd: float = Field(default=0.5, alias="LLM_PER_DOC_BUDGET_USD")
+    budget_enforcement: str = Field(default="soft", alias="LLM_BUDGET_ENFORCEMENT")
+
+    # Prompt response cache TTL
+    prompt_cache_ttl_seconds: int = Field(default=2_592_000, alias="LLM_PROMPT_CACHE_TTL_SECONDS")
+
+    # Safety
+    redact_pii: bool = Field(default=True, alias="LLM_REDACT_PII")
+
+    @property
+    def fallback_chain(self) -> list[str]:
+        return [m.strip() for m in self.fallback_chain_csv.split(",") if m.strip()]
+
+    @property
+    def fast_chain(self) -> list[str]:
+        return [m.strip() for m in self.fast_chain_csv.split(",") if m.strip()]
+
 
 class AppSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore", populate_by_name=True)

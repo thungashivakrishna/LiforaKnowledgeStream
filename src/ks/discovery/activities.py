@@ -7,13 +7,13 @@ from typing import Any
 from urllib.parse import urljoin, urlparse
 
 import httpx
-import litellm
 from bs4 import BeautifulSoup
 from sqlalchemy import select
 from temporalio import activity
 
 from apps.api.database import AsyncSessionFactory
 from ks.common import redis_client
+from ks.common.llm_gateway import complete as gateway_complete
 from ks.config.settings import get_settings
 from ks.discovery.schemas import DocumentRelevanceScoreOutput
 from ks.domain.enums import DiscoveryDecision, DiscoveryMode, RunStatus
@@ -454,14 +454,14 @@ class DiscoveryActivities:
         """
 
         try:
-            response = litellm.completion(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                response_format={"type": "json_object"},
-                api_key=api_key
+            response = await gateway_complete(
+                "discovery.priority_score.v1",
+                {"url": url, "topics": topics, "source_trust": source_trust, "metadata": metadata},
+                stage="discovery",
             )
-
-            output = json.loads(response.choices[0].message.content)
+            if response.status not in ("success", "cached"):
+                return {"success": False, "error": response.status}
+            output = json.loads(response.content)
             return {"success": True, "score_data": output}
         except Exception as e:
             logger.error(f"Priority scoring failed for {url}: {e}")
@@ -636,19 +636,20 @@ class DiscoveryActivities:
         """
 
         try:
-            response = litellm.completion(
-                model=model,
-                messages=[{"role": "user", "content": prompt}],
-                response_format={"type": "json_object"},
-                api_key=api_key
+            response = await gateway_complete(
+                "discovery.source_authority.v1",
+                {"domain": domain, "snippet": snippet},
+                stage="discovery",
             )
 
-            output = json.loads(response.choices[0].message.content)
+            if response.status not in ("success", "cached"):
+                return {"success": False, "error": response.status}
+            output = json.loads(response.content)
             llm_is_reputable = output.get("is_reputable", False)
             llm_trust_score = output.get("trust_score", 0.5)
             llm_source_type = output.get("source_type", "COMMERCIAL_WELLNESS")
             llm_reason = output.get("reason", "LLM evaluated.")
-            
+
             # Map source_type to standard enum if possible
             std_source_type = SourceType.MANUAL_REFERENCE_SOURCE
             if llm_source_type == "ACADEMIC":
@@ -657,7 +658,7 @@ class DiscoveryActivities:
                 std_source_type = SourceType.PUBLIC_HEALTH_SOURCE
             elif llm_source_type == "CLINICAL":
                 std_source_type = SourceType.CLINICAL_REPORT_SOURCE
-                
+
             # 6. Persist the LLM evaluated domain to the database to cache it permanently!
             try:
                 async with AsyncSessionFactory() as session:
@@ -672,7 +673,7 @@ class DiscoveryActivities:
                             tier = 2
                         elif llm_trust_score < 0.40:
                             tier = 5
-                            
+
                         new_source = SourceRegistry(
                             id=uuid.uuid4(),
                             name=domain_clean_base.split(".")[0].upper(),
@@ -688,7 +689,6 @@ class DiscoveryActivities:
                         logger.info(f"Persisted LLM-evaluated domain {domain_clean_base} as {new_source.approval_status.value} with tier {tier}")
             except Exception as persist_err:
                 logger.warning(f"Failed to persist LLM-evaluated domain: {persist_err}")
-                
             return {"success": True, "evaluation": output}
         except Exception as e:
             logger.error(f"Source authority evaluation LLM failed for {domain_clean_base}: {e}")

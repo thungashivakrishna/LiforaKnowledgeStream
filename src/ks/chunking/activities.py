@@ -5,13 +5,13 @@ import uuid
 from datetime import datetime
 from typing import List, Dict, Any
 
-import litellm
 from minio import Minio
 from qdrant_client import QdrantClient
 from qdrant_client.http import models as qdrant_models
 from temporalio import activity
 
 from ks.common import redis_client
+from ks.common.llm_gateway import embed as gateway_embed
 from ks.config.settings import get_settings
 from ks.domain.enums import RunStatus
 from ks.domain.models import ChunkRun, KnowledgeChunk, DocumentRegistry
@@ -138,7 +138,6 @@ class ChunkingActivities:
         Payload keys: text, embedding_model, document_id, primary_framework, topics
         """
         text = payload["text"]
-        model = payload.get("embedding_model", "text-embedding-3-small")
 
         try:
             # 1. Split Text
@@ -148,35 +147,15 @@ class ChunkingActivities:
             if not raw_chunks:
                 return {"success": True, "chunks": []}
 
-            # 2. Check Redis cache for each chunk's embedding
-            api_key = self.settings.model.embedding_api_key
-            cached_vectors: dict[int, list] = {}
-            uncached_indices: list[int] = []
-            uncached_texts: list[str] = []
-
-            for i, chunk_text in enumerate(raw_chunks):
-                chunk_hash = hashlib.sha256(chunk_text.encode()).hexdigest()
-                cached = await redis_client.get_cache(f"cache:embedding:{chunk_hash}")
-                if cached is not None:
-                    cached_vectors[i] = cached
-                else:
-                    uncached_indices.append(i)
-                    uncached_texts.append(chunk_text)
-
-            total_tokens = 0
-            if uncached_texts:
-                logger.info(f"Generating embeddings for {len(uncached_texts)}/{len(raw_chunks)} uncached chunks")
-                response = litellm.embedding(model=model, input=uncached_texts, api_key=api_key)
-                usage = getattr(response, "usage", None)
-                total_tokens = getattr(usage, "total_tokens", 0) if usage else 0
-
-                for j, idx in enumerate(uncached_indices):
-                    vector = response.data[j]["embedding"]
-                    chunk_hash = hashlib.sha256(raw_chunks[idx].encode()).hexdigest()
-                    await redis_client.set_cache(f"cache:embedding:{chunk_hash}", vector)
-                    cached_vectors[idx] = vector
-            else:
-                logger.info(f"All {len(raw_chunks)} chunk embeddings served from cache")
+            doc_id = payload.get("document_id")
+            vectors = await gateway_embed(
+                raw_chunks,
+                stage="chunking",
+                document_id=doc_id,
+                cache=True,
+            )
+            total_tokens = 0  # tracked inside gateway
+            cached_vectors = {i: v for i, v in enumerate(vectors)}
 
             processed_chunks = []
             for i, chunk_text in enumerate(raw_chunks):

@@ -95,6 +95,17 @@ async def set_cache(key: str, value: Any, ttl: int | None = None) -> None:
         logger.warning("Redis set_cache error: %s", e)
 
 
+async def incr_spend(key: str, amount: float, ex: int) -> float:
+    """Atomically increment a spend counter; returns new total. Fail-open returns 0."""
+    try:
+        new_val = await _get_client().incrbyfloat(key, amount)
+        await _get_client().expire(key, ex)
+        return float(new_val)
+    except Exception as e:
+        logger.warning("Redis incr_spend error: %s", e)
+        return 0.0
+
+
 async def rate_check(domain: str, limit: int = 10) -> bool:
     """
     Sliding-window rate check (1-second window).

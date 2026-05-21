@@ -22,6 +22,7 @@ import Discovery from './pages/Discovery'
 import UserMapping from './pages/UserMapping'
 import ReviewQueue from './pages/ReviewQueue'
 import KnowledgeIntelligence from './pages/KnowledgeIntelligence'
+import LLMGateway from './pages/LLMGateway'
 import PersonalizedProtocols from './pages/PersonalizedProtocols'
 import GraphExplorer from './pages/GraphExplorer'
 import { clsx } from 'clsx'
@@ -67,6 +68,7 @@ const App = () => {
     { to: "/review", icon: ShieldAlert, label: "Review Queue" },
     { to: "/graph", icon: Network, label: "Graph Explorer" },
     { to: "/intelligence", icon: Activity, label: "Intelligence" },
+    { to: "/llm-gateway", icon: BarChart3, label: "LLM Gateway" },
     { to: "/inspector", icon: BarChart3, label: "System Inspector" },
   ]
 
@@ -147,6 +149,7 @@ const App = () => {
             <Route path="/review" element={<ReviewQueue />} />
             <Route path="/graph" element={<GraphExplorer />} />
             <Route path="/intelligence" element={<KnowledgeIntelligence />} />
+            <Route path="/llm-gateway" element={<LLMGateway />} />
             <Route path="/inspector" element={<SystemInspector />} />
             <Route path="*" element={<PlaceholderPage title="Page Not Found" />} />
           </Routes>

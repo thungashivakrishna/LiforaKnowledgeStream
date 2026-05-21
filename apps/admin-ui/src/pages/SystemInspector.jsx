@@ -7,7 +7,7 @@ import { clsx } from 'clsx'
 const API_BASE = '/api/v1'
 
 const SystemInspector = () => {
-  const [activeTab, setActiveTab] = useState('audit') // 'audit' or 'tables'
+  const [activeTab, setActiveTab] = useState('audit') // 'audit' | 'tables' | 'llm'
   const [tables, setTables] = useState([])
   const [selectedTable, setSelectedTable] = useState('')
   const [data, setData] = useState({ columns: [], rows: [], total: 0 })
@@ -21,10 +21,23 @@ const SystemInspector = () => {
   const [auditStatus, setAuditStatus] = useState('idle')
   const [isAuditRunning, setIsAuditRunning] = useState(false)
 
+  // LLM Provider health
+  const [providerHealth, setProviderHealth] = useState([])
+
   useEffect(() => {
     fetchTables()
     fetchAuditStatus()
+    fetchProviderHealth()
   }, [])
+
+  const fetchProviderHealth = async () => {
+    try {
+      const res = await axios.get(`${API_BASE}/llm/provider-health`)
+      setProviderHealth(res.data)
+    } catch (e) {
+      console.error('Error fetching provider health:', e)
+    }
+  }
 
   // Poll for audit status if it's running
   useEffect(() => {
@@ -119,7 +132,7 @@ const SystemInspector = () => {
             <ShieldCheck className="w-4 h-4" />
             STABILITY AUDIT
           </button>
-          <button 
+          <button
             onClick={() => setActiveTab('tables')}
             className={clsx(
               "px-6 py-2.5 rounded-xl text-sm font-bold transition-all flex items-center gap-2",
@@ -129,10 +142,52 @@ const SystemInspector = () => {
             <Database className="w-4 h-4" />
             TABLE INSPECTOR
           </button>
+          <button
+            onClick={() => setActiveTab('llm')}
+            className={clsx(
+              "px-6 py-2.5 rounded-xl text-sm font-bold transition-all flex items-center gap-2",
+              activeTab === 'llm' ? "bg-brand-600 text-white shadow-lg" : "text-slate-500 hover:text-slate-300"
+            )}
+          >
+            <Activity className="w-4 h-4" />
+            LLM HEALTH
+          </button>
         </div>
       </div>
 
-      {activeTab === 'audit' ? (
+      {activeTab === 'llm' ? (
+        <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6">
+          <h3 className="font-semibold text-white mb-4">Provider Health</h3>
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="text-slate-500 text-left">
+                <th className="pb-2">Model</th>
+                <th className="pb-2">Last Success</th>
+                <th className="pb-2">Last Error</th>
+                <th className="pb-2 text-right">Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {providerHealth.map((p, i) => (
+                <tr key={i} className="border-t border-slate-800">
+                  <td className="py-2 text-slate-300 font-mono text-xs">{p.model}</td>
+                  <td className="py-2 text-slate-400 text-xs">{p.last_success ? new Date(p.last_success).toLocaleString() : '—'}</td>
+                  <td className="py-2 text-red-400 text-xs">{p.last_error ? new Date(p.last_error).toLocaleString() : '—'}</td>
+                  <td className="py-2 text-right">
+                    {p.healthy
+                      ? <CheckCircle2 className="w-4 h-4 text-emerald-400 inline" />
+                      : <XCircle className="w-4 h-4 text-red-400 inline" />
+                    }
+                  </td>
+                </tr>
+              ))}
+              {providerHealth.length === 0 && (
+                <tr><td colSpan={4} className="py-4 text-slate-500 text-center">No LLM calls recorded yet</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      ) : activeTab === 'audit' ? (
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-8 flex-1 overflow-hidden">
           {/* Controls */}
           <div className="lg:col-span-1 space-y-6">
