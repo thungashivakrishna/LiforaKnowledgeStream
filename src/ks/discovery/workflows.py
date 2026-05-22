@@ -42,7 +42,15 @@ class DiscoveryWorkflow:
                 for s in payload.get("sources", []):
                     domains.append(urlparse(s["root_url"]).netloc)
                 
-                query = " ".join(topics)
+                expanded_query = ""
+                if topics:
+                    expanded_query = await workflow.execute_activity(
+                        "expand_discovery_query",
+                        topics,
+                        start_to_close_timeout=timedelta(minutes=2)
+                    )
+                
+                query = expanded_query if expanded_query else " ".join(topics)
                 search_payload = {
                     "query": query,
                     "limit": max_candidates,
@@ -82,6 +90,21 @@ class DiscoveryWorkflow:
                         start_to_close_timeout=timedelta(minutes=1)
                     )
                     
+                    similarity_payload = {
+                        "metadata": metadata,
+                        "topics": topics,
+                        "threshold": 0.65
+                    }
+                    similarity_eval = await workflow.execute_activity(
+                        "calculate_semantic_similarity",
+                        similarity_payload,
+                        start_to_close_timeout=timedelta(minutes=2)
+                    )
+                    
+                    if not similarity_eval.get("passed", True):
+                        workflow.logger.info(f"🛑 Rejecting candidate {url} due to low semantic similarity score: {similarity_eval.get('score', 0.0):.4f}")
+                        continue
+                        
                     score_payload = {
                         "url": url,
                         "metadata": metadata,

@@ -439,16 +439,161 @@ class DiscoveryActivities:
     @activity.defn
     async def evaluate_source_authority(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Evaluate a new/unknown domain to determine if it should be allowed."""
+        from ks.domain.models import SourceRegistry
+        from ks.domain.enums import SourceApprovalStatus, SourceType
+        
         domain = payload.get("domain", "")
         snippet = payload.get("snippet", "")
         
+        # 1. Normalize domain name
+        domain_clean = domain.lower().strip()
+        if ":" in domain_clean:
+            domain_clean = domain_clean.split(":")[0]
+        if domain_clean.startswith("www."):
+            domain_clean_base = domain_clean[4:]
+        else:
+            domain_clean_base = domain_clean
+            
+        logger.info(f"Evaluating source authority for domain: {domain_clean_base}")
+        
+        # 2. Database Lookup
+        try:
+            async with AsyncSessionFactory() as session:
+                # Search for domain in root_url
+                res = await session.execute(
+                    select(SourceRegistry).where(
+                        (SourceRegistry.root_url.ilike(f"%{domain_clean_base}%"))
+                    )
+                )
+                source = res.scalars().first()
+                
+                if source:
+                    # If blocked/untrustworthy
+                    if source.approval_status == SourceApprovalStatus.BLOCKED or source.trust_tier == 5:
+                        logger.info(f"Domain {domain_clean_base} found in db and is BLOCKED.")
+                        return {
+                            "success": True,
+                            "evaluation": {
+                                "is_reputable": False,
+                                "trust_score": 0.0,
+                                "reason": f"Domain blocked in database registry: {source.review_notes or 'Low authority.'}",
+                                "source_type": "SPAM"
+                            }
+                        }
+                    
+                    # If approved
+                    is_reputable = source.approval_status in [
+                        SourceApprovalStatus.APPROVED_ACTIVE,
+                        SourceApprovalStatus.APPROVED_LIMITED,
+                        SourceApprovalStatus.CANDIDATE,
+                        SourceApprovalStatus.UNDER_REVIEW
+                    ]
+                    trust_score = source.authority_score if source.authority_score is not None else (1.0 - (source.trust_tier - 1) * 0.2)
+                    trust_score = max(0.0, min(1.0, trust_score))
+                    
+                    logger.info(f"Domain {domain_clean_base} found in db. is_reputable={is_reputable}, trust_score={trust_score}")
+                    return {
+                        "success": True,
+                        "evaluation": {
+                            "is_reputable": is_reputable,
+                            "trust_score": trust_score,
+                            "reason": f"Domain resolved from trust registry: {source.name}. Status: {source.approval_status.value}",
+                            "source_type": source.source_type.value
+                        }
+                    }
+        except Exception as db_err:
+            logger.error(f"Database lookup failed during source authority evaluation: {db_err}")
+            
+        # 3. Static Patterns Check
+        static_matched = False
+        is_reputable = False
+        trust_score = 0.5
+        source_type = "SPAM"
+        reason = ""
+        
+        # A. Trusted Suffixes
+        if any(domain_clean_base.endswith(suffix) for suffix in [".gov", ".edu", ".gov.uk", ".gov.au", ".gov.ca"]):
+            static_matched = True
+            is_reputable = True
+            trust_score = 0.95
+            source_type = "PUBLIC_HEALTH_SOURCE" if ".gov" in domain_clean_base else "ACADEMIC_SOURCE"
+            reason = f"Verified high-authority public health or academic domain extension ({domain_clean_base})."
+            
+        # B. Trusted Domain Matches
+        elif any(trusted in domain_clean_base for trusted in [
+            "who.int", "cochrane.org", "nhs.uk", "mayoclinic.org", "clevelandclinic.org",
+            "academic.oup.com", "jamanetwork.com", "thelancet.com", "nejm.org", "nature.com",
+            "science.org", "springer.com", "wiley.com", "sciencedirect.com", "cell.com",
+            "plos.org", "frontiersin.org", "mdpi.com", "europepmc.org", "ncbi.nlm.nih.gov",
+            "pubmed.ncbi.nlm.nih.gov"
+        ]):
+            static_matched = True
+            is_reputable = True
+            trust_score = 0.95 if any(x in domain_clean_base for x in ["who.int", "nih.gov", "cochrane.org"]) else 0.90
+            source_type = "ACADEMIC_SOURCE" if any(x in domain_clean_base for x in [
+                "academic.oup.com", "jamanetwork.com", "thelancet.com", "nejm.org", "nature.com",
+                "science.org", "springer.com", "wiley.com", "sciencedirect.com", "cell.com",
+                "plos.org", "frontiersin.org", "mdpi.com", "europepmc.org", "ncbi.nlm.nih.gov",
+                "pubmed.ncbi.nlm.nih.gov"
+            ]) else "HOSPITAL_EDUCATION_SOURCE"
+            reason = f"Verified high-authority clinical/medical institution domain ({domain_clean_base})."
+            
+        # C. Blocked/Spam Extensions & Keywords
+        elif any(spam in domain_clean_base for spam in [
+            ".xyz", ".top", ".click", ".review", ".preview", ".club",
+            "coupon", "discount", "shopping", "promo", "deal", "best-product"
+        ]):
+            static_matched = True
+            is_reputable = False
+            trust_score = 0.1
+            source_type = "SPAM"
+            reason = f"Blocked domain extension or suspicious commercial spam keywords detected ({domain_clean_base})."
+            
+        # 4. If static match, persist & return
+        if static_matched:
+            logger.info(f"Static pattern match for {domain_clean_base}: is_reputable={is_reputable}, trust_score={trust_score}")
+            try:
+                async with AsyncSessionFactory() as session:
+                    # Double-check inside session to avoid race condition
+                    existing = await session.execute(
+                        select(SourceRegistry).where(SourceRegistry.root_url == f"https://{domain_clean_base}")
+                    )
+                    if not existing.scalars().first():
+                        new_source = SourceRegistry(
+                            id=uuid.uuid4(),
+                            name=domain_clean_base.split(".")[0].upper(),
+                            root_url=f"https://{domain_clean_base}",
+                            source_type=SourceType(source_type) if source_type != "SPAM" else SourceType.MANUAL_REFERENCE_SOURCE,
+                            trust_tier=1 if is_reputable else 5,
+                            authority_score=trust_score,
+                            approval_status=SourceApprovalStatus.APPROVED_ACTIVE if is_reputable else SourceApprovalStatus.BLOCKED,
+                            review_notes=reason
+                        )
+                        session.add(new_source)
+                        await session.commit()
+                        logger.info(f"Persisted static matching domain {domain_clean_base} as {new_source.approval_status.value}")
+            except Exception as persist_err:
+                logger.warning(f"Failed to persist static match domain: {persist_err}")
+                
+            return {
+                "success": True,
+                "evaluation": {
+                    "is_reputable": is_reputable,
+                    "trust_score": trust_score,
+                    "reason": reason,
+                    "source_type": source_type
+                }
+            }
+            
+        # 5. LLM Fallback (if no DB record and no static match)
+        logger.info(f"No DB match or static rule match for {domain_clean_base}. Falling back to LLM evaluation.")
         settings = get_settings()
         model = settings.model.primary_model
         api_key = settings.model.primary_api_key
         
         prompt = f"""
         Evaluate the following web domain for clinical and medical authority.
-        Domain: {domain}
+        Domain: {domain_clean_base}
         Sample Context: {snippet}
         
         Is this a reputable academic, public health, government, or recognized clinical site?
@@ -468,9 +613,54 @@ class DiscoveryActivities:
             )
             
             output = json.loads(response.choices[0].message.content)
+            llm_is_reputable = output.get("is_reputable", False)
+            llm_trust_score = output.get("trust_score", 0.5)
+            llm_source_type = output.get("source_type", "COMMERCIAL_WELLNESS")
+            llm_reason = output.get("reason", "LLM evaluated.")
+            
+            # Map source_type to standard enum if possible
+            std_source_type = SourceType.MANUAL_REFERENCE_SOURCE
+            if llm_source_type == "ACADEMIC":
+                std_source_type = SourceType.ACADEMIC_SOURCE
+            elif llm_source_type == "GOVERNMENT":
+                std_source_type = SourceType.PUBLIC_HEALTH_SOURCE
+            elif llm_source_type == "CLINICAL":
+                std_source_type = SourceType.CLINICAL_REPORT_SOURCE
+                
+            # 6. Persist the LLM evaluated domain to the database to cache it permanently!
+            try:
+                async with AsyncSessionFactory() as session:
+                    existing = await session.execute(
+                        select(SourceRegistry).where(SourceRegistry.root_url == f"https://{domain_clean_base}")
+                    )
+                    if not existing.scalars().first():
+                        tier = 3
+                        if llm_trust_score >= 0.85:
+                            tier = 1
+                        elif llm_trust_score >= 0.70:
+                            tier = 2
+                        elif llm_trust_score < 0.40:
+                            tier = 5
+                            
+                        new_source = SourceRegistry(
+                            id=uuid.uuid4(),
+                            name=domain_clean_base.split(".")[0].upper(),
+                            root_url=f"https://{domain_clean_base}",
+                            source_type=std_source_type,
+                            trust_tier=tier,
+                            authority_score=llm_trust_score,
+                            approval_status=SourceApprovalStatus.APPROVED_ACTIVE if (llm_is_reputable and tier < 5) else SourceApprovalStatus.BLOCKED,
+                            review_notes=f"LLM Authority Eval: {llm_reason}"
+                        )
+                        session.add(new_source)
+                        await session.commit()
+                        logger.info(f"Persisted LLM-evaluated domain {domain_clean_base} as {new_source.approval_status.value} with tier {tier}")
+            except Exception as persist_err:
+                logger.warning(f"Failed to persist LLM-evaluated domain: {persist_err}")
+                
             return {"success": True, "evaluation": output}
         except Exception as e:
-            logger.error(f"Source authority evaluation failed for {domain}: {e}")
+            logger.error(f"Source authority evaluation LLM failed for {domain_clean_base}: {e}")
             return {"success": False, "error": str(e)}
 
     @activity.defn
@@ -532,3 +722,100 @@ class DiscoveryActivities:
         crawler = AsyncHttpCrawler(self.http_client)
         results = await crawler.crawl(start_url, config)
         return results
+
+    @activity.defn
+    async def expand_discovery_query(self, topics: list[str]) -> str:
+        """Use an LLM to expand user search topics into an optimized medical query."""
+        if not topics:
+            return ""
+            
+        settings = get_settings()
+        model = settings.model.primary_model
+        api_key = settings.model.primary_api_key
+        
+        topics_str = ", ".join(topics)
+        prompt = f"""
+        You are an advanced Clinical Search Specialist. Your task is to expand the following medical search topics into a single optimized search query string for clinical research and evidence gathering.
+        
+        Topics: {topics_str}
+        
+        Rules:
+        1. Include standard clinical synonyms, chemical names, acronyms, and scientific names (e.g. expand PCOS to "polycystic ovary syndrome" and include standard abbreviations).
+        2. Connect search terms using uppercase OR and AND operators where appropriate.
+        3. Do not include search prefix operators like site: or filetype: unless highly related.
+        4. Keep the query string standard and compatible with general web search engines.
+        5. Return ONLY the raw expanded query string. Do not include markdown, code blocks, prefixes, explanations, or quotes.
+        
+        Example Output for ["PCOS"]:
+        "polycystic ovary syndrome" OR PCOS OR "stein-leventhal syndrome"
+        """
+        
+        try:
+            response = litellm.completion(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                api_key=api_key
+            )
+            expanded = response.choices[0].message.content.strip()
+            # Clean any surrounding quotes or markdown code block formatting if generated by the LLM
+            if expanded.startswith("`") or expanded.startswith('"'):
+                expanded = expanded.strip("`").strip('"')
+            logger.info(f"Expanded topics {topics} into clinical query: '{expanded}'")
+            return expanded
+        except Exception as e:
+            logger.error(f"Query expansion failed: {e}. Falling back to default query.")
+            return " ".join(topics)
+
+    @activity.defn
+    async def calculate_semantic_similarity(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Compute the cosine similarity between the candidate document metadata and the search topics."""
+        metadata = payload.get("metadata", {})
+        topics = payload.get("topics", [])
+        threshold = payload.get("threshold", 0.65)
+        
+        if not topics or not metadata:
+            return {"passed": True, "score": 1.0}
+            
+        settings = get_settings()
+        embedding_model = settings.model.embedding_model
+        api_key = settings.model.embedding_api_key
+        
+        topics_text = " ".join(topics)
+        doc_title = metadata.get("title", "") or ""
+        doc_desc = metadata.get("meta_description", "") or ""
+        doc_text = f"{doc_title} {doc_desc}".strip()
+        
+        if not doc_text:
+            return {"passed": False, "score": 0.0}
+            
+        try:
+            logger.info(f"Generating embeddings for pre-triage semantic check using model: {embedding_model}")
+            
+            # Generate embeddings for both texts
+            response = litellm.embedding(
+                model=embedding_model,
+                input=[topics_text, doc_text],
+                api_key=api_key
+            )
+            
+            vec_topics = response.data[0]["embedding"]
+            vec_doc = response.data[1]["embedding"]
+            
+            # Compute Cosine Similarity
+            import math
+            dot_product = sum(a * b for a, b in zip(vec_topics, vec_doc))
+            magnitude_topics = math.sqrt(sum(a * a for a in vec_topics))
+            magnitude_doc = math.sqrt(sum(a * a for a in vec_doc))
+            
+            if magnitude_topics == 0 or magnitude_doc == 0:
+                similarity = 0.0
+            else:
+                similarity = dot_product / (magnitude_topics * magnitude_doc)
+                
+            passed = similarity >= threshold
+            logger.info(f"Semantic similarity between topics '{topics_text}' and doc '{doc_title}': {similarity:.4f} (Threshold: {threshold}) -> Passed: {passed}")
+            return {"passed": passed, "score": similarity}
+            
+        except Exception as e:
+            logger.error(f"Semantic pre-triage similarity check failed: {e}. Defaulting to pass.")
+            return {"passed": True, "score": 0.5}

@@ -10,9 +10,10 @@ from bs4 import BeautifulSoup
 from minio import Minio
 from temporalio import activity
 from PIL import Image
-import pytesseract
 import litellm
-import pdfminer.high_level
+from docling.datamodel.base_models import DocumentStream, InputFormat
+from docling.datamodel.pipeline_options import PdfPipelineOptions
+from docling.document_converter import DocumentConverter, PdfFormatOption
 
 from ks.config.settings import get_settings
 from ks.domain.enums import RunStatus, ExtractionQuality
@@ -61,20 +62,25 @@ class ExtractionActivities:
                     script.extract()
                 extracted_text = soup.get_text(separator="\n", strip=True)
                 
-            elif ext == "pdf":
-                pdf_io = io.BytesIO(content)
-                try:
-                    extracted_text = pdfminer.high_level.extract_text(pdf_io)
-                except Exception as e:
-                    logger.error(f"PDFminer failed, fall back to direct string: {e}")
-                    extracted_text = ""
-                if len(extracted_text.strip()) < 50 and use_ocr:
-                    quality = ExtractionQuality.LOW
+            elif ext in ["pdf", "docx", "pptx", "xlsx", "png", "jpg", "jpeg"]:
+                # Setup OCR options matching the use_ocr request flag
+                pipeline_options = PdfPipelineOptions()
+                pipeline_options.do_ocr = use_ocr
                 
-            elif ext in ["png", "jpg", "jpeg"] and use_ocr:
-                img = Image.open(io.BytesIO(content))
-                extracted_text = pytesseract.image_to_string(img)
-                quality = ExtractionQuality.MEDIUM
+                # Create the stream wrapper
+                stream = DocumentStream(name=raw_object_key, stream=io.BytesIO(content))
+                
+                converter = DocumentConverter(
+                    format_options={
+                        InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)
+                    }
+                )
+                
+                # Execute Docling conversion
+                result = converter.convert(stream)
+                extracted_text = result.document.export_to_markdown()
+                quality = ExtractionQuality.HIGH
+                
             else:
                 try:
                     extracted_text = content.decode("utf-8", errors="ignore")
@@ -89,7 +95,7 @@ class ExtractionActivities:
             # 3. LLM Enhancement (Optional - note using deeper model if specified but fallback to deepseek logic is in enrichment usually)
             if use_llm and len(extracted_text) > 10:
                 try:
-                    prompt = f"Read this raw text and convert into clean markdown with headers.\n\nRaw Text:\n{extracted_text[:3000]}"
+                    prompt = f"Read this clean markdown or text, preserve all medical details, and format it cleanly with appropriate headers:\n\n{extracted_text[:8000]}"
                     resp = litellm.completion(
                         model="deepseek/deepseek-chat",
                         messages=[{"role": "user", "content": prompt}],

@@ -34,19 +34,28 @@ class DuckDuckGoProvider:
 
     async def search(self, query: str, limit: int = 10) -> list[dict[str, Any]]:
         try:
-            from duckduckgo_search import AsyncDDGS
+            import asyncio
+            try:
+                from ddgs import DDGS
+            except ImportError:
+                from duckduckgo_search import DDGS
+            
+            def run_sync_search():
+                with DDGS() as ddgs:
+                    return list(ddgs.text(query, max_results=limit))
+            
+            raw_results = await asyncio.to_thread(run_sync_search)
             
             results = []
-            async with AsyncDDGS() as ddgs:
-                async for r in ddgs.text(query, max_results=limit):
-                    results.append({
-                        "url": r.get("href"),
-                        "title": r.get("title"),
-                        "snippet": r.get("body")
-                    })
+            for r in raw_results:
+                results.append({
+                    "url": r.get("href") or r.get("url"),
+                    "title": r.get("title"),
+                    "snippet": r.get("body") or r.get("snippet")
+                })
             return results
         except ImportError:
-            logger.error("duckduckgo-search package is not installed.")
+            logger.error("ddgs or duckduckgo-search package is not installed.")
             return []
         except Exception as e:
             logger.error(f"DuckDuckGo search failed: {e}")

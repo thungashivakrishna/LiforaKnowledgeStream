@@ -18,6 +18,8 @@ from ks.acquisition.schemas import IntelligenceAuditOutput
 
 
 import io
+from docling.datamodel.base_models import DocumentStream
+from docling.document_converter import DocumentConverter
 
 logger = logging.getLogger(__name__)
 
@@ -117,12 +119,11 @@ class AcquisitionActivities:
             # Diagnostic PDF Parsing & Vision Intake
             elif "pdf" in content_type:
                 try:
-                    from pdfminer.high_level import extract_text
-                    pdf_file = io.BytesIO(content)
-                    text = extract_text(pdf_file)
+                    stream = DocumentStream(name="diagnostic.pdf", stream=io.BytesIO(content))
+                    converter = DocumentConverter()
+                    result = converter.convert(stream)
+                    text = result.document.export_to_markdown()
                     
-                    # If very little text is extracted, it might be a scanned PDF.
-                    # We can use OCR vision intake as fallback if needed.
                     if len(text.strip()) < 50:
                         logger.warning(f"Low text yield from PDF {doc_id}. Likely a scanned lab report.")
                         text = "[SCANNED DIAGNOSTIC REPORT] - Vision Intake Required for full extraction.\n" + text
@@ -131,12 +132,12 @@ class AcquisitionActivities:
                     text = ""
                     
             elif "image" in content_type:
-                # Vision Intake using Tesseract OCR for physical medical reports/prescriptions
+                # Vision Intake using Docling OCR for physical medical reports/prescriptions
                 try:
-                    import pytesseract
-                    from PIL import Image
-                    img = Image.open(io.BytesIO(content))
-                    text = pytesseract.image_to_string(img)
+                    stream = DocumentStream(name="diagnostic.png", stream=io.BytesIO(content))
+                    converter = DocumentConverter()
+                    result = converter.convert(stream)
+                    text = result.document.export_to_markdown()
                     logger.info(f"Successfully ran OCR Vision Intake on image {doc_id}")
                 except Exception as e:
                     logger.error(f"Failed OCR on image {doc_id}: {e}")

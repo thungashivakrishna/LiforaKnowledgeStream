@@ -80,6 +80,8 @@ async def main() -> None:
                 discovery_activities.fetch_page_metadata,
                 discovery_activities.calculate_priority_score,
                 discovery_activities.perform_deep_crawl,
+                discovery_activities.expand_discovery_query,
+                discovery_activities.calculate_semantic_similarity,
                 acquisition_activities.fetch_content,
                 acquisition_activities.audit_document_intelligence,
                 acquisition_activities.persist_audit_facts,
