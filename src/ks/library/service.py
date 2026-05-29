@@ -218,3 +218,107 @@ class LibraryService:
             "framework_distribution": {row[0]: row[1] for row in fw_res.all()},
             "recent_findings": recent_res.scalars().all()
         }
+
+    async def get_clinical_quality_metrics(self):
+        """Aggregate data to visualize the Levels of Evidence (LoE) and dynamic clinical audits."""
+        # 1. Distribution of Evidence Grades
+        grade_stats_q = (
+            select(DocumentRegistry.evidence_grade, func.count(DocumentRegistry.id))
+            .group_by(DocumentRegistry.evidence_grade)
+        )
+        
+        # 2. Avg Confidence and total facts
+        total_stats_q = select(
+            func.count(KnowledgeFact.id),
+            func.avg(KnowledgeFact.confidence)
+        )
+        
+        # 3. Domain credibility rankings
+        domain_rankings_q = (
+            select(
+                SourceRegistry.name,
+                SourceRegistry.source_type,
+                func.count(DocumentRegistry.id),
+                func.avg(DocumentRegistry.priority_score)
+            )
+            .join(DocumentRegistry, DocumentRegistry.source_id == SourceRegistry.id)
+            .group_by(SourceRegistry.name, SourceRegistry.source_type)
+            .order_by(func.avg(DocumentRegistry.priority_score).desc())
+            .limit(10)
+        )
+        
+        # 4. Critic Agent Audit Log list
+        critic_audits_q = (
+            select(KnowledgeFact)
+            .where(KnowledgeFact.is_hallucination == True)
+            .order_by(KnowledgeFact.created_at.desc())
+            .limit(10)
+            .options(selectinload(KnowledgeFact.document))
+        )
+        
+        grade_res = await self.db.execute(grade_stats_q)
+        total_res = await self.db.execute(total_stats_q)
+        domain_res = await self.db.execute(domain_rankings_q)
+        critic_res = await self.db.execute(critic_audits_q)
+        
+        total_count, avg_conf = total_res.first()
+        
+        # Format Grade Distribution
+        grade_dist = {"GRADE_A": 0, "GRADE_B": 0, "GRADE_C": 0, "GRADE_D": 0}
+        for row in grade_res.all():
+            g = row[0] or "GRADE_D"
+            grade_dist[g] = row[1]
+            
+        # Format Domain Ledger
+        domain_ledger = []
+        for row in domain_res.all():
+            domain_ledger.append({
+                "name": row[0],
+                "source_type": row[1].value if row[1] else "OTHER",
+                "document_count": row[2],
+                "avg_priority_score": float(row[3] or 0.0)
+            })
+            
+        return {
+            "total_facts": total_count or 0,
+            "avg_confidence": float(avg_conf or 0.0),
+            "evidence_grade_distribution": grade_dist,
+            "domain_ledger": domain_ledger,
+            "critic_audits": critic_res.scalars().all()
+        }
+
+    async def get_clinical_quality_pathways(self):
+        """Aggregate subject-predicate-object facts grouped by standardized clinical schemas (Biomarker, Intervention, Symptom)."""
+        # We query facts where subject_type or object_type is not null
+        from sqlalchemy import and_
+        query = (
+            select(KnowledgeFact)
+            .where(and_(
+                KnowledgeFact.subject_type != None,
+                KnowledgeFact.object_type != None
+            ))
+            .options(selectinload(KnowledgeFact.document))
+            .order_by(KnowledgeFact.confidence.desc())
+            .limit(100)
+        )
+        result = await self.db.execute(query)
+        facts = result.scalars().all()
+        
+        # We'll map them to structured pathway relationships
+        pathways = []
+        for f in facts:
+            pathways.append({
+                "id": str(f.id),
+                "fact_text": f.fact_text,
+                "subject": f.subject,
+                "subject_type": f.subject_type,
+                "predicate": f.predicate,
+                "object": f.object_,
+                "object_type": f.object_type,
+                "confidence": f.confidence,
+                "evidence_grade": f.document.evidence_grade if f.document else "GRADE_D",
+                "study_type": f.document.study_type if f.document else "Unclassified",
+                "document_title": f.document.title if f.document else "N/A"
+            })
+        return pathways
+

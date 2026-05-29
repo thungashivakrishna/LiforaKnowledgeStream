@@ -138,6 +138,80 @@ class EnrichmentActivities:
             return {"success": False, "frameworks": ["PREVENTIVE_MEDICINE"], "error": str(e)}
 
     @activity.defn
+    async def audit_clinical_evidence(self, payload: dict) -> dict:
+        """
+        Audits the document methodology and abstract to determine Level of Evidence (LoE) grade.
+        Payload: text OR extracted_text_key, document_id, run_id
+        """
+        from apps.api.database import SessionLocal
+        from ks.domain.models import DocumentRegistry
+        from sqlalchemy import select as sa_select
+
+        doc_id = uuid.UUID(payload["document_id"])
+        
+        try:
+            async with SessionLocal() as session:
+                # Hydrate title and source type from PostgreSQL dynamically
+                stmt = sa_select(DocumentRegistry).where(DocumentRegistry.id == doc_id).join(DocumentRegistry.source)
+                res = await session.execute(stmt)
+                doc = res.scalar_one_or_none()
+                if doc:
+                    title = doc.title or "Unknown Title"
+                    source_type = doc.source.source_type.value if doc.source else "GENERAL_HEALTH"
+                else:
+                    title = "Unknown Title"
+                    source_type = "GENERAL_HEALTH"
+        except Exception as e:
+            logger.warning(f"Database query failed for document {doc_id}: {e}")
+            title = "Unknown Title"
+            source_type = "GENERAL_HEALTH"
+        
+        try:
+            raw_text = self._fetch_text_from_payload(payload)
+            # Use first 12,000 characters for abstract / methodology
+            text = raw_text[:12000]
+        except Exception as e:
+            return {
+                "success": False, 
+                "evidence_grade": "GRADE_D", 
+                "study_type": "Unknown Methodology", 
+                "methodology_critique": f"Text fetch failed: {e}"
+            }
+
+        try:
+            logger.info("Running dynamic Level of Evidence (LoE) audit via gateway")
+            resp = await gateway_complete(
+                "enrichment.evidence_audit.v1",
+                {"title": title, "source_type": source_type, "text": text},
+                stage="enrichment",
+                run_id=payload.get("run_id"),
+                document_id=payload.get("document_id"),
+            )
+            if resp.status not in ("success", "cached"):
+                return {
+                    "success": False, 
+                    "evidence_grade": "GRADE_D", 
+                    "study_type": "Unclassified Study", 
+                    "methodology_critique": f"LLM Gateway status: {resp.status}"
+                }
+
+            output = json.loads(resp.content)
+            return {
+                "success": True,
+                "evidence_grade": output.get("evidence_grade", "GRADE_D"),
+                "study_type": output.get("study_type", "Unclassified Study"),
+                "methodology_critique": output.get("methodology_critique", "")
+            }
+        except Exception as e:
+            logger.error(f"Clinical evidence audit failed: {e}")
+            return {
+                "success": False, 
+                "evidence_grade": "GRADE_D", 
+                "study_type": "Unclassified Study", 
+                "methodology_critique": str(e)
+            }
+
+    @activity.defn
     async def run_llm_enrichment(self, payload: dict) -> dict:
         """
         Calls litellm to parse the text and return structured JSON based on LLMEnrichmentOutput schema.
@@ -220,6 +294,16 @@ class EnrichmentActivities:
         async with SessionLocal() as session:
             try:
                 from sqlalchemy import select as sa_select
+                from ks.domain.models import DocumentRegistry
+                # Update Document level clinical quality metadata
+                existing_doc = (await session.execute(
+                    sa_select(DocumentRegistry).where(DocumentRegistry.id == doc_id)
+                )).scalar_one_or_none()
+                if existing_doc:
+                    existing_doc.evidence_grade = payload.get("evidence_grade", "GRADE_D")
+                    existing_doc.study_type = payload.get("study_type")
+                    existing_doc.methodology_critique = payload.get("methodology_critique")
+
                 # 1. Upsert Summary — update if exists, create if not
                 existing_summary = (await session.execute(
                     sa_select(KnowledgeSummary).where(KnowledgeSummary.document_id == doc_id)
@@ -329,6 +413,26 @@ class EnrichmentActivities:
                         if is_hallucination:
                             status = ValidationStatus.PENDING # Force human review
 
+                    # Determine subject type and object type based on extraction tags & medical keywords
+                    def get_entity_type(name: str) -> str | None:
+                        if not name:
+                            return "OTHER"
+                        name_lower = name.lower().strip()
+                        if any(x.lower().strip() in name_lower or name_lower in x.lower().strip() for x in enrichment.get("interventions", [])):
+                            return "INTERVENTION"
+                        if any(x.lower().strip() in name_lower or name_lower in x.lower().strip() for x in enrichment.get("conditions", [])):
+                            return "CONDITION"
+                        if any(x.lower().strip() in name_lower or name_lower in x.lower().strip() for x in enrichment.get("symptoms", [])):
+                            return "SYMPTOM"
+                        if any(x.lower().strip() in name_lower or name_lower in x.lower().strip() for x in enrichment.get("nutrients", [])):
+                            return "INTERVENTION"
+                        # Heuristic checks
+                        if any(keyword in name_lower for keyword in ["insulin", "testosterone", "cortisol", "lh", "fsh", "hba1c", "glucose", "shbg", "progesterone", "estrogen", "tsh", "crp", "lipid"]):
+                            return "BIOMARKER"
+                        if any(keyword in name_lower for keyword in ["metformin", "inositol", "spironolactone", "spearmint", "diet", "exercise", "training", "supplement", "vitamin", "dose", "mg"]):
+                            return "INTERVENTION"
+                        return "OTHER"
+
                     fact = KnowledgeFact(
                         document_id=doc_id,
                         fact_text=fact_data.get("fact_text", ""),
@@ -339,7 +443,9 @@ class EnrichmentActivities:
                         source_span=fact_data.get("source_span"),
                         validation_status=status,
                         is_hallucination=is_hallucination,
-                        critique=critique
+                        critique=critique,
+                        subject_type=get_entity_type(norm_subject),
+                        object_type=get_entity_type(norm_object)
                     )
                     session.add(fact)
                     redis_keys_to_mark.append(fact_key)

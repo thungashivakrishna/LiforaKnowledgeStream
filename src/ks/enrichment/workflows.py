@@ -40,6 +40,20 @@ class EnrichmentWorkflow:
         )
         detected = detect_result.get("frameworks", ["PREVENTIVE_MEDICINE"])
         
+        # 3.5 Dynamic Evidence & Study Design Audit
+        audit_result = await workflow.execute_activity(
+            "audit_clinical_evidence",
+            {
+                "extracted_text_key": extracted_text_key,
+                "document_id": str(doc_id),
+                "run_id": str(run_id)
+            },
+            start_to_close_timeout=timedelta(minutes=2),
+        )
+        evidence_grade = audit_result.get("evidence_grade", "GRADE_D")
+        study_type = audit_result.get("study_type", "Unclassified Study")
+        methodology_critique = audit_result.get("methodology_critique", "")
+        
         # User Override: Filter framework execution by explicit user input scope
         framework_scope = payload.get("framework_scope", [])
         if framework_scope and isinstance(framework_scope, list) and len(framework_scope) > 0:
@@ -171,7 +185,10 @@ class EnrichmentWorkflow:
             "run_id": run_id,
             "document_id": doc_id,
             "enrichment": merged_enrichment,
-            "model": model # Store the actual model identifier for dashboard metrics
+            "model": model, # Store the actual model identifier for dashboard metrics
+            "evidence_grade": evidence_grade,
+            "study_type": study_type,
+            "methodology_critique": methodology_critique
         }
         
         # 5.5 Multi-Model Verification (Critic)

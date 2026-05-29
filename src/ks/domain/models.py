@@ -130,6 +130,9 @@ class DocumentRegistry(Base):
     word_count: Mapped[int | None] = mapped_column(Integer)
     raw_object_key: Mapped[str | None] = mapped_column(Text)
     extracted_text_key: Mapped[str | None] = mapped_column(Text)
+    evidence_grade: Mapped[str | None] = mapped_column(String(20), default="GRADE_D")
+    study_type: Mapped[str | None] = mapped_column(String(100))
+    methodology_critique: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
@@ -322,6 +325,8 @@ class KnowledgeFact(Base):
     )
     is_hallucination: Mapped[bool] = mapped_column(Boolean, default=False)
     critique: Mapped[str | None] = mapped_column(Text)
+    subject_type: Mapped[str | None] = mapped_column(String(50))
+    object_type: Mapped[str | None] = mapped_column(String(50))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     document: Mapped["DocumentRegistry"] = relationship(back_populates="facts")

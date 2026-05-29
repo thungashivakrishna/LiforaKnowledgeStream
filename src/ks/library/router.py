@@ -208,3 +208,32 @@ async def get_library_intelligence(db: AsyncSession = Depends(get_db_session)):
     stats["recent_findings"] = findings
     return stats
 
+@router.get("/clinical-quality/metrics")
+async def get_clinical_quality_metrics(db: AsyncSession = Depends(get_db_session)):
+    """Fetch structured levels of evidence (LoE) and domain audit logs for the clinical hub."""
+    service = LibraryService(db)
+    stats = await service.get_clinical_quality_metrics()
+    
+    # Format critic audits
+    audits = []
+    for f in stats["critic_audits"]:
+        audits.append({
+            "id": str(f.id),
+            "fact_text": f.fact_text,
+            "subject": f.subject,
+            "predicate": f.predicate,
+            "object": f.object_,
+            "confidence": f.confidence,
+            "critique": f.critique,
+            "document_title": f.document.title if f.document else "Unknown Document"
+        })
+    stats["critic_audits"] = audits
+    return stats
+
+@router.get("/clinical-quality/pathways")
+async def get_clinical_quality_pathways(db: AsyncSession = Depends(get_db_session)):
+    """Fetch structured subject-predicate-object pathways mapping interventions to biomarkers/symptoms."""
+    service = LibraryService(db)
+    return await service.get_clinical_quality_pathways()
+
+

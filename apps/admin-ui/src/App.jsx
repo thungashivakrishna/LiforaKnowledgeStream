@@ -12,7 +12,8 @@ import {
   X,
   UserCircle,
   Target,
-  Network
+  Network,
+  Award
 } from 'lucide-react'
 import SourceRegistry from './pages/SourceRegistry'
 import KnowledgeLibrary from './pages/KnowledgeLibrary'
@@ -25,6 +26,7 @@ import KnowledgeIntelligence from './pages/KnowledgeIntelligence'
 import LLMGateway from './pages/LLMGateway'
 import PersonalizedProtocols from './pages/PersonalizedProtocols'
 import GraphExplorer from './pages/GraphExplorer'
+import ClinicalQualityAuditHub from './pages/ClinicalQualityAuditHub'
 import { clsx } from 'clsx'
 
 const NavItem = ({ to, icon: Icon, label, active }) => (
@@ -65,6 +67,7 @@ const App = () => {
     { to: "/protocols", icon: Target, label: "Protocols" },
     { to: "/mapping", icon: UserCircle, label: "User Mapping" },
     { to: "/documents", icon: FileText, label: "Documents" },
+    { to: "/clinical-quality", icon: Award, label: "Clinical Quality Hub" },
     { to: "/review", icon: ShieldAlert, label: "Review Queue" },
     { to: "/graph", icon: Network, label: "Graph Explorer" },
     { to: "/intelligence", icon: Activity, label: "Intelligence" },
@@ -146,6 +149,7 @@ const App = () => {
             <Route path="/mapping" element={<UserMapping />} />
             <Route path="/protocols" element={<PersonalizedProtocols />} />
             <Route path="/documents" element={<KnowledgeLibrary />} />
+            <Route path="/clinical-quality" element={<ClinicalQualityAuditHub />} />
             <Route path="/review" element={<ReviewQueue />} />
             <Route path="/graph" element={<GraphExplorer />} />
             <Route path="/intelligence" element={<KnowledgeIntelligence />} />
