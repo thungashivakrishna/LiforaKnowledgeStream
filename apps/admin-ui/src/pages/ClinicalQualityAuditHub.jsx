@@ -72,12 +72,12 @@ const ClinicalQualityAuditHub = () => {
   // Filtered pathways
   const filteredPathways = pathways.filter(p => {
     const matchesSearch = 
-      p.subject.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      p.object.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      p.fact_text.toLowerCase().includes(searchQuery.toLowerCase())
+      (p.subject || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (p.object || '').toLowerCase().includes(searchQuery.toLowerCase()) ||
+      (p.fact_text || '').toLowerCase().includes(searchQuery.toLowerCase())
     
-    const matchesGrade = gradeFilter === 'ALL' || p.evidence_grade === gradeFilter
-    const matchesType = typeFilter === 'ALL' || p.subject_type === typeFilter || p.object_type === typeFilter
+    const matchesGrade = gradeFilter === 'ALL' || (p.evidence_grade || 'GRADE_D') === gradeFilter
+    const matchesType = typeFilter === 'ALL' || (p.subject_type || 'OTHER') === typeFilter || (p.object_type || 'OTHER') === typeFilter
 
     return matchesSearch && matchesGrade && matchesType
   })
@@ -282,11 +282,11 @@ const ClinicalQualityAuditHub = () => {
                           </div>
                         </td>
                         <td className="p-4 text-right">
-                          <span className={clsx("text-[10px] font-bold px-2.5 py-1 rounded border", GRADE_BADGES[p.evidence_grade] || GRADE_BADGES.GRADE_D)}>
-                            {p.evidence_grade.replace('_', ' ')}
+                          <span className={clsx("text-[10px] font-bold px-2.5 py-1 rounded border", GRADE_BADGES[p.evidence_grade || 'GRADE_D'] || GRADE_BADGES.GRADE_D)}>
+                            {(p.evidence_grade || 'GRADE_D').replace('_', ' ')}
                           </span>
                         </td>
-                        <td className="p-4 text-right font-mono font-bold text-white">{(p.confidence * 100).toFixed(0)}%</td>
+                        <td className="p-4 text-right font-mono font-bold text-white">{((p.confidence || 0) * 100).toFixed(0)}%</td>
                       </tr>
                     ))}
                     {filteredPathways.length === 0 && (
