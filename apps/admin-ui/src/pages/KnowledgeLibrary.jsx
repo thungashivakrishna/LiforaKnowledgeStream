@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react'
+import { useLocation } from 'react-router-dom'
 import axios from 'axios'
 import { 
   FileText, 
@@ -25,6 +26,7 @@ import KnowledgeGraph from '../components/KnowledgeGraph'
 const API_BASE = '/api/v1'
 
 const KnowledgeLibrary = () => {
+  const location = useLocation()
   const [documents, setDocuments] = useState([])
   const [total, setTotal] = useState(0)
   const [loading, setLoading] = useState(true)
@@ -60,6 +62,12 @@ const KnowledgeLibrary = () => {
       fetchDocumentDetails(selectedDocId)
     }
   }, [selectedDocId])
+
+  useEffect(() => {
+    if (location.state?.selectedDocId) {
+      setSelectedDocId(location.state.selectedDocId)
+    }
+  }, [location.state])
 
   const fetchDocuments = async (query = '', currentFilters = {}, currentOffset = 0, reset = false) => {
     try {

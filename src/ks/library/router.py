@@ -225,7 +225,8 @@ async def get_clinical_quality_metrics(db: AsyncSession = Depends(get_db_session
             "object": f.object_,
             "confidence": f.confidence,
             "critique": f.critique,
-            "document_title": f.document.title if f.document else "Unknown Document"
+            "document_title": f.document.title if f.document else "Unknown Document",
+            "document_id": str(f.document.id) if f.document else None
         })
     stats["critic_audits"] = audits
     return stats

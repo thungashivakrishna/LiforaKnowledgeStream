@@ -318,7 +318,8 @@ class LibraryService:
                 "confidence": f.confidence,
                 "evidence_grade": f.document.evidence_grade if f.document else "GRADE_D",
                 "study_type": f.document.study_type if f.document else "Unclassified",
-                "document_title": f.document.title if f.document else "N/A"
+                "document_title": f.document.title if f.document else "N/A",
+                "document_id": str(f.document.id) if f.document else None
             })
         return pathways
 

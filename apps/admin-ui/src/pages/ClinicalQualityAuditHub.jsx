@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
 import axios from 'axios'
 import { motion } from 'framer-motion'
 import { clsx } from 'clsx'
 import {
-  ShieldCheck, Activity, Award, CheckCircle, AlertTriangle, Layers, Search, RefreshCw, ChevronRight, HelpCircle
+  ShieldCheck, Activity, Award, CheckCircle, AlertTriangle, Layers, Search, RefreshCw, ChevronRight, HelpCircle, ExternalLink
 } from 'lucide-react'
 
 const API_BASE = 'http://localhost:8000/api/v1'
@@ -26,6 +27,7 @@ const StatCard = ({ title, value, icon: Icon, subtitle, color = 'brand' }) => (
 )
 
 const ClinicalQualityAuditHub = () => {
+  const navigate = useNavigate()
   const [metrics, setMetrics] = useState(null)
   const [pathways, setPathways] = useState([])
   const [loading, setLoading] = useState(true)
@@ -257,6 +259,7 @@ const ClinicalQualityAuditHub = () => {
                       <th className="p-4 font-semibold text-xs uppercase tracking-wider">Subject Entity (Source)</th>
                       <th className="p-4 font-semibold text-xs uppercase tracking-wider">Clinical Predicate</th>
                       <th className="p-4 font-semibold text-xs uppercase tracking-wider">Object Entity (Target)</th>
+                      <th className="p-4 font-semibold text-xs uppercase tracking-wider">Primary Source Document</th>
                       <th className="p-4 font-semibold text-xs text-right uppercase tracking-wider">LoE Grade</th>
                       <th className="p-4 font-semibold text-xs text-right uppercase tracking-wider">Audited Confidence</th>
                     </tr>
@@ -280,6 +283,20 @@ const ClinicalQualityAuditHub = () => {
                               {p.object_type}
                             </span>
                           </div>
+                        </td>
+                        <td className="p-4">
+                          {p.document_id ? (
+                            <button
+                              onClick={() => navigate('/documents', { state: { selectedDocId: p.document_id } })}
+                              className="text-brand-400 hover:text-brand-350 font-medium hover:underline transition-all text-xs text-left max-w-[200px] truncate flex items-center gap-1.5 capitalize"
+                              title={p.document_title}
+                            >
+                              <ExternalLink className="w-3 h-3 flex-shrink-0 opacity-70" />
+                              {p.document_title}
+                            </button>
+                          ) : (
+                            <span className="text-slate-500 text-xs italic">No Source Ref</span>
+                          )}
                         </td>
                         <td className="p-4 text-right">
                           <span className={clsx("text-[10px] font-bold px-2.5 py-1 rounded border", GRADE_BADGES[p.evidence_grade || 'GRADE_D'] || GRADE_BADGES.GRADE_D)}>
@@ -349,11 +366,22 @@ const ClinicalQualityAuditHub = () => {
             <div className="space-y-4">
               {metrics?.critic_audits.map((a, i) => (
                 <div key={i} className="bg-slate-900/50 border border-slate-800 p-6 rounded-2xl flex flex-col gap-3">
-                  <div className="flex justify-between items-start">
+                  <div className="flex justify-between items-start gap-4">
                     <span className="text-[10px] font-bold text-red-400 bg-red-500/10 border border-red-500/20 px-2 py-0.5 rounded tracking-wider uppercase">
                       Hallucination Flagged
                     </span>
-                    <span className="text-slate-500 text-xs font-mono">{a.document_title}</span>
+                    {a.document_id ? (
+                      <button
+                        onClick={() => navigate('/documents', { state: { selectedDocId: a.document_id } })}
+                        className="text-slate-400 hover:text-brand-400 transition-colors text-xs font-mono font-medium hover:underline text-right truncate max-w-[300px] flex items-center gap-1.5"
+                        title={a.document_title}
+                      >
+                        <ExternalLink className="w-3 h-3 flex-shrink-0 opacity-70" />
+                        {a.document_title}
+                      </button>
+                    ) : (
+                      <span className="text-slate-500 text-xs font-mono truncate max-w-[300px]">{a.document_title}</span>
+                    )}
                   </div>
                   <div>
                     <span className="text-slate-500 text-xs uppercase tracking-wider block font-bold mb-1">Extracted Fact</span>
